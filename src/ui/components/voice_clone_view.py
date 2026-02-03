@@ -91,8 +91,7 @@ class VoiceCloneView(ft.Container):
 
         self.ref_audio_status = ft.Text(
             "未选择文件",
-            size=12,
-            color=ft.Colors.GREY_500
+            size=12
         )
 
         # 参考文本输入框
@@ -237,7 +236,6 @@ class VoiceCloneView(ft.Container):
                     ft.Button(
                         "生成语音",
                         icon=ft.Icons.SEND,
-                        bgcolor=ft.Colors.BLUE,
                         style=ft.ButtonStyle(
                             text_style=ft.TextStyle(
                                 font_family="Microsoft YaHei",
@@ -354,7 +352,7 @@ class VoiceCloneView(ft.Container):
 
         if not clones:
             self.clone_library_grid.controls.append(
-                ft.Text("暂无克隆", size=12, color=ft.Colors.GREY_500)
+                ft.Text("暂无克隆", size=12)
             )
         else:
             for clone in clones:
@@ -363,8 +361,7 @@ class VoiceCloneView(ft.Container):
                         ft.Text(clone["name"], size=13, weight=ft.FontWeight.BOLD),
                         ft.Text(
                             clone["created_at"][:10],
-                            size=11,
-                            color=ft.Colors.GREY_400
+                            size=11
                         ),
                         ft.Row([
                             ft.IconButton(
@@ -542,14 +539,13 @@ class VoiceCloneView(ft.Container):
             except:
                 pass
 
-            # 在后台线程中执行TTS生成
-            import asyncio
-            audio, sr = await asyncio.to_thread(
-                tts_engine.voice_clone_synthesize,
+            # 在后台线程中执行TTS生成（使用异步API）
+            audio, sr = await tts_engine.voice_clone_synthesize_async(
                 text=text,
                 ref_audio=ref_audio,
                 ref_text=ref_text,
-                x_vector_only=x_vector_only
+                x_vector_only=x_vector_only,
+                timeout=300.0
             )
 
             self.terminal.add_log("✓ 语音生成成功")
@@ -712,7 +708,6 @@ class VoiceCloneView(ft.Container):
                 self._ref_audio_path = result[0].path
                 filename = os.path.basename(self._ref_audio_path)
                 self.ref_audio_status.value = f"已选择: {filename}"
-                self.ref_audio_status.color = ft.Colors.GREEN
                 self.ref_audio_status.update()
                 self.terminal.add_log(f"已选择参考音频: {filename}")
 

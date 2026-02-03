@@ -87,8 +87,7 @@ class VoiceDesignView(ft.Container):
         # 字符计数
         self.char_count = ft.Text(
             "字符数: 0 / 推荐 30-80",
-            size=12,
-            color=ft.Colors.GREY_400
+            size=12
         )
         self.design_input.on_change = self._on_design_change
 
@@ -106,8 +105,7 @@ class VoiceDesignView(ft.Container):
                     ft.Text(name, size=13, weight=ft.FontWeight.BOLD),
                     ft.Text(
                         desc[:30] + "..." if len(desc) > 30 else desc,
-                        size=11,
-                        color=ft.Colors.GREY_400
+                        size=11
                     ),
                 ], spacing=5),
                 padding=10,
@@ -122,7 +120,7 @@ class VoiceDesignView(ft.Container):
 
         # 我的收藏 (Chips)
         self.fav_chips = ft.Row(
-            [ft.Text("暂无收藏", size=12, color=ft.Colors.GREY_500)],
+            [ft.Text("暂无收藏", size=12)],
             spacing=5,
             wrap=True
         )
@@ -214,7 +212,6 @@ class VoiceDesignView(ft.Container):
                     ft.Button(
                         "生成语音",
                         icon=ft.Icons.SEND,
-                        bgcolor=ft.Colors.BLUE,
                         style=ft.ButtonStyle(
                             text_style=ft.TextStyle(
                                 font_family="Microsoft YaHei",
@@ -332,15 +329,6 @@ class VoiceDesignView(ft.Container):
         text = self.design_input.value or ""
         char_count = len(text)
         self.char_count.value = f"字符数: {char_count} / 推荐 30-80"
-
-        # 根据字符数改变颜色
-        if 30 <= char_count <= 80:
-            self.char_count.color = ft.Colors.GREEN
-        elif char_count < 30 or char_count > 100:
-            self.char_count.color = ft.Colors.ORANGE
-        else:
-            self.char_count.color = ft.Colors.GREY_400
-
         self.char_count.update()
 
     def _on_preset_click(self, e, name: str, desc: str):
@@ -390,7 +378,7 @@ class VoiceDesignView(ft.Container):
             control = ft.Container(
                 content=ft.Row([
                     ft.Text(f"[{timestamp}] {item['name']}", size=12, weight=ft.FontWeight.W_500),
-                    ft.Text(desc, size=11, color=ft.Colors.GREY_400, expand=True),
+                    ft.Text(desc, size=11, expand=True),
                 ], spacing=5),
                 padding=5,
                 on_click=lambda e, d=item["description"]: self._on_history_click(e, d),
@@ -460,13 +448,12 @@ class VoiceDesignView(ft.Container):
             except:
                 pass
 
-            # 在后台线程中执行TTS生成
-            import asyncio
-            audio, sr = await asyncio.to_thread(
-                tts_engine.voice_design_synthesize,
+            # 在后台线程中执行TTS生成（使用异步API）
+            audio, sr = await tts_engine.voice_design_synthesize_async(
                 text=text,
                 design_prompt=design_prompt,
-                language="Chinese"
+                language="Chinese",
+                timeout=300.0
             )
 
             self.terminal.add_log("✓ 语音生成成功")

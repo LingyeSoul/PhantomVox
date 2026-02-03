@@ -15,9 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ui.main_ui import PhantomUI
 from utils.logger import app_logger
-
-# 版本号
-VERSION = "0.2.0"
+from version import VERSION
 
 
 async def main(page: ft.Page):

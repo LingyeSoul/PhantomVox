@@ -213,11 +213,22 @@ class ModelManager:
             loop = asyncio.get_event_loop()
 
             def download_in_thread():
+                # 构建下载参数
+                download_kwargs = {
+                    "cache_dir": str(self.models_dir),
+                    "local_dir": str(model_path),
+                    "revision": "master"
+                }
+
+                # 如果不是分词器模型，排除 speech_tokenizer 目录（使用共享分词器）
+                if model_id != "tokenizer-12hz":
+                    # 使用 ignore_patterns 排除 speech_tokenizer 目录及其所有内容
+                    download_kwargs["ignore_patterns"] = ["speech_tokenizer/**"]
+                    logger.info(f"跳过 speech_tokenizer 目录（将使用共享分词器 tokenizer-12hz）")
+
                 return snapshot_download(
                     model_info.repo_id,
-                    cache_dir=str(self.models_dir),
-                    local_dir=str(model_path),
-                    revision='master'
+                    **download_kwargs
                     # 注意：ModelScope 的 snapshot_download 不支持自定义进度回调
                     # 它会在内部自动显示进度到终端
                 )

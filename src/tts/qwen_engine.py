@@ -9,10 +9,122 @@ Qwen3-TTS 引擎封装
 
 from qwen_tts import Qwen3TTSModel
 import logging
+import os
 import numpy as np
+import asyncio
 from typing import Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor
+
+from .thread_pool_manager import TTSThreadPoolManager
+from .exceptions import (
+    TTSError,
+    TTSModelNotLoadedError,
+    TTSInvalidParameterError,
+    TTSTimeoutError,
+    TTSSynthesisError
+)
 
 logger = logging.getLogger(__name__)
+
+
+# ========== 共享 Tokenizer 支持 ==========
+
+_SHARED_TOKENIZER_DIR = None  # 共享 tokenizer 路径
+
+
+def _patch_tokenizer_loading():
+    """
+    Patch transformers 的 cached_file 和 cached_files 以支持共享 tokenizer。
+
+    关键：直接在 transformers.utils.hub 模块上 patch，确保所有后续导入都能获取 patched 版本
+    """
+    from transformers.utils import hub as transformers_hub
+    from qwen_tts.inference.qwen3_tts_tokenizer import Qwen3TTSTokenizer
+
+    # 保存原始函数
+    original_cached_file = transformers_hub.cached_file
+    original_cached_files = transformers_hub.cached_files
+
+    logger.info(f"[PATCH] 开始应用共享 tokenizer patch，共享目录: {_SHARED_TOKENIZER_DIR}")
+
+    # ========== Patch cached_files（必须先 patch，因为 cached_file 内部调用它）==========
+    def patched_cached_files(path_or_repo_id, filenames, **kwargs):
+        global _SHARED_TOKENIZER_DIR
+
+        # 检查是否请求 speech_tokenizer 相关文件
+        if _SHARED_TOKENIZER_DIR and filenames:
+            first_filename = filenames[0] if filenames else ""
+
+            if first_filename.startswith("speech_tokenizer/"):
+                logger.info(f"[PATCH] cached_files 拦截到请求: {filenames}")
+                # 重定向到共享 tokenizer 目录
+                new_filenames = [
+                    os.path.join(_SHARED_TOKENIZER_DIR, f.replace("speech_tokenizer/", ""))
+                    for f in filenames
+                ]
+
+                existing_files = [f for f in new_filenames if os.path.exists(f)]
+                if existing_files:
+                    logger.info(f"[PATCH] ✓ 返回共享文件: {existing_files}")
+                    return existing_files
+                else:
+                    logger.warning(f"[PATCH] ✗ 共享目录中找不到文件: {new_filenames}")
+
+        # 其他情况使用原始逻辑
+        return original_cached_files(path_or_repo_id, filenames, **kwargs)
+
+    # 直接替换模块属性
+    transformers_hub.cached_files = patched_cached_files
+
+    # ========== Patch cached_file ==========
+    def patched_cached_file(pretrained_model_name_or_path, filename, *args, **kwargs):
+        global _SHARED_TOKENIZER_DIR
+
+        # 拦截 speech_tokenizer 相关请求
+        if _SHARED_TOKENIZER_DIR and filename.startswith("speech_tokenizer/"):
+            logger.info(f"[PATCH] cached_file 拦截到请求: {filename}")
+            # 重定向到共享目录
+            new_path = os.path.join(_SHARED_TOKENIZER_DIR, filename.replace("speech_tokenizer/", ""))
+            if os.path.exists(new_path):
+                logger.info(f"[PATCH] ✓ 返回共享文件: {new_path}")
+                return new_path
+            else:
+                logger.warning(f"[PATCH] ✗ 共享目录中找不到文件: {new_path}")
+
+        return original_cached_file(pretrained_model_name_or_path, filename, *args, **kwargs)
+
+    # 直接替换模块属性
+    transformers_hub.cached_file = patched_cached_file
+
+    # ========== Patch Qwen3TTSTokenizer.from_pretrained ==========
+    original_from_pretrained = Qwen3TTSTokenizer.from_pretrained.__func__
+
+    def patched_from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        global _SHARED_TOKENIZER_DIR
+
+        # 如果路径包含 speech_tokenizer，重定向到共享目录
+        if _SHARED_TOKENIZER_DIR and "speech_tokenizer" in str(pretrained_model_name_or_path):
+            logger.info(f"[PATCH] Qwen3TTSTokenizer 拦截到请求: {pretrained_model_name_or_path}")
+            return original_from_pretrained(cls, _SHARED_TOKENIZER_DIR, **kwargs)
+
+        return original_from_pretrained(cls, pretrained_model_name_or_path, **kwargs)
+
+    Qwen3TTSTokenizer.from_pretrained = classmethod(patched_from_pretrained)
+
+    # ========== Patch qwen-tts 模块中的引用 ==========
+    # 因为 qwen-tts 在模块导入时就已经 cached_file 的引用
+    # 我们需要直接替换模块命名空间中的引用
+    try:
+        from qwen_tts.core.models import modeling_qwen3_tts
+        modeling_qwen3_tts.cached_file = patched_cached_file
+        logger.info("[PATCH] ✓ 已更新 qwen-tts 模块中的 cached_file 引用")
+    except Exception as e:
+        logger.warning(f"[PATCH] ⚠ 无法更新 qwen-tts 模块引用: {e}")
+
+    logger.info("[PATCH] ✓ 所有 Patch 应用完成")
+
+
+# =========================================
 
 
 class QwenEngine:
@@ -23,7 +135,18 @@ class QwenEngine:
     MODEL_VOICE_DESIGN = "VoiceDesign"
     MODEL_BASE = "Base"
 
-    def __init__(self, model_path=None, model_type=None, device="cuda:0", dtype=None, attn_implementation=None):
+    # 默认超时常量
+    DEFAULT_TTS_TIMEOUT = 300.0  # 默认TTS超时时间（秒）
+
+    def __init__(
+        self,
+        model_path=None,
+        model_type=None,
+        device="cuda:0",
+        dtype=None,
+        attn_implementation=None,
+        shared_tokenizer_path=None
+    ):
         """
         初始化 Qwen TTS 引擎
 
@@ -33,6 +156,7 @@ class QwenEngine:
             device: 运行设备 ("cpu", "cuda", 或 "cuda:0")
             dtype: 数据类型（可选，传递给 qwen-tts）
             attn_implementation: 注意力实现（可选，传递给 qwen-tts）
+            shared_tokenizer_path: 共享 tokenizer 路径（可选，如未指定则自动查找）
         """
         self.model = None
         self.device = device
@@ -40,13 +164,40 @@ class QwenEngine:
         self.model_type = model_type
         self.dtype = dtype
         self.attn_implementation = attn_implementation
+        self.shared_tokenizer_path = shared_tokenizer_path
+        self._executor: Optional[ThreadPoolExecutor] = None
         self._load_model()
 
     def _load_model(self):
         """加载 Qwen3-TTS 模型"""
+        global _SHARED_TOKENIZER_DIR
+
         try:
             logger.info(f"正在加载 Qwen3-TTS 模型 ({self.model_type or '默认'})...")
             logger.info(f"设备: {self.device}")
+
+            # 设置共享 tokenizer 路径
+            tokenizer_dir = self.shared_tokenizer_path
+
+            logger.info(f"[DEBUG] shared_tokenizer_path (参数): {tokenizer_dir}")
+            logger.info(f"[DEBUG] model_path: {self.model_path}")
+
+            if tokenizer_dir is None and self.model_path:
+                # 自动查找：模型路径父目录/tokenizer-12hz
+                model_parent_dir = os.path.dirname(self.model_path)
+                tokenizer_dir = os.path.join(model_parent_dir, "tokenizer-12hz")
+                logger.info(f"[DEBUG] 自动计算的 tokenizer_dir: {tokenizer_dir}")
+                logger.info(f"[DEBUG] tokenizer_dir 是否存在: {os.path.exists(tokenizer_dir)}")
+
+            if tokenizer_dir and os.path.exists(tokenizer_dir):
+                _SHARED_TOKENIZER_DIR = tokenizer_dir
+                logger.info(f"使用共享 tokenizer: {tokenizer_dir}")
+                # 应用 monkey-patch
+                _patch_tokenizer_loading()
+            else:
+                if tokenizer_dir:
+                    logger.warning(f"未找到共享 tokenizer ({tokenizer_dir})，使用模型内置 tokenizer")
+                _SHARED_TOKENIZER_DIR = None
 
             # 构建模型加载参数
             model_kwargs = {"device_map": self.device}
@@ -107,10 +258,10 @@ class QwenEngine:
             (audio_data, sample_rate)
         """
         if not self.model:
-            raise RuntimeError("模型未加载")
+            raise TTSModelNotLoadedError("模型未加载")
 
         if not text or not text.strip():
-            raise ValueError("输入文本不能为空")
+            raise TTSInvalidParameterError("输入文本不能为空")
 
         try:
             logger.info(f"正在生成语音 (Custom Voice): {text[:50]}...")
@@ -170,10 +321,10 @@ class QwenEngine:
             (audio_data, sample_rate)
         """
         if not self.model:
-            raise RuntimeError("模型未加载")
+            raise TTSModelNotLoadedError("模型未加载")
 
         if not text or not text.strip():
-            raise ValueError("输入文本不能为空")
+            raise TTSInvalidParameterError("输入文本不能为空")
 
         try:
             logger.info(f"正在生成语音 (Voice Design): {text[:50]}...")
@@ -218,10 +369,10 @@ class QwenEngine:
             (audio_data, sample_rate)
         """
         if not self.model:
-            raise RuntimeError("模型未加载")
+            raise TTSModelNotLoadedError("模型未加载")
 
         if not text or not text.strip():
-            raise ValueError("输入文本不能为空")
+            raise TTSInvalidParameterError("输入文本不能为空")
 
         try:
             logger.info(f"正在生成语音 (Voice Clone): {text[:50]}...")
@@ -270,7 +421,7 @@ class QwenEngine:
             prompt_items (可传递给 generate_voice_clone 的 voice_clone_prompt 参数)
         """
         if not self.model:
-            raise RuntimeError("模型未加载")
+            raise TTSModelNotLoadedError("模型未加载")
 
         try:
             logger.info("正在提取声音特征...")
@@ -287,6 +438,278 @@ class QwenEngine:
         except Exception as e:
             logger.error(f"✗ 特征提取失败: {str(e)}")
             raise
+
+    # ========== 异步API ==========
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        """获取或创建线程池执行器
+
+        Returns:
+            ThreadPoolExecutor: 线程池执行器实例
+        """
+        if self._executor is None:
+            self._executor = TTSThreadPoolManager().get_executor()
+        return self._executor
+
+    async def _execute_async_tts(
+        self,
+        operation_name: str,
+        sync_func,
+        timeout: float = DEFAULT_TTS_TIMEOUT,
+        **kwargs
+    ) -> Tuple[np.ndarray, int]:
+        """通用的异步TTS执行包装器
+
+        Args:
+            operation_name: 操作名称（用于日志）
+            sync_func: 要执行的同步函数
+            timeout: 超时时间（秒）
+            **kwargs: 传递给同步函数的参数
+
+        Returns:
+            (audio_data, sample_rate)
+
+        Raises:
+            TTSModelNotLoadedError: 模型未加载
+            TTSInvalidParameterError: 输入文本为空
+            TTSTimeoutError: 合成超时
+            TTSSynthesisError: 合成失败
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        # 验证文本参数（如果存在）
+        text = kwargs.get('text', '')
+        if text and not text.strip():
+            raise TTSInvalidParameterError("输入文本不能为空")
+
+        logger.info(f"[Async] 正在生成语音 ({operation_name}): {text[:50]}...")
+
+        loop = asyncio.get_running_loop()
+        executor = self._get_executor()
+
+        try:
+            wavs, sr = await asyncio.wait_for(
+                loop.run_in_executor(
+                    executor,
+                    lambda: sync_func(**kwargs)
+                ),
+                timeout=timeout
+            )
+            logger.info(f"✓ [Async] 语音生成成功 ({operation_name})")
+            return wavs[0], sr
+
+        except asyncio.TimeoutError:
+            logger.error(f"✗ [Async] 语音生成超时 (>{timeout}s)")
+            raise TTSTimeoutError(f"操作超时: {operation_name}")
+        except Exception as e:
+            logger.error(f"✗ [Async] 语音生成失败 ({operation_name}): {str(e)}")
+            raise TTSSynthesisError(f"语音合成失败: {operation_name}") from e
+
+    async def custom_voice_synthesize_async(
+        self,
+        text: str,
+        speaker: str = "Vivian",
+        language: str = "Chinese",
+        instruct: str = "",
+        timeout: float = DEFAULT_TTS_TIMEOUT,
+        **kwargs
+    ) -> Tuple[np.ndarray, int]:
+        """
+        使用 Custom Voice 模式生成语音 (异步版本)
+
+        Args:
+            text: 输入文本
+            speaker: 说话人 (Vivian/Serena/Uncle_Fu/Dylan/Eric/Ryan/Aiden/Ono_Anna/Sohee)
+            language: 语言 (Chinese/English/Japanese/Korean/Auto)
+            instruct: 情感指令
+            timeout: 超时时间（秒），默认300秒
+            **kwargs: 其他参数 (speed_factor, pitch_factor 等)
+
+        Returns:
+            (audio_data, sample_rate)
+
+        Raises:
+            TTSModelNotLoadedError: 模型未加载
+            TTSInvalidParameterError: 输入文本为空
+            TTSTimeoutError: 合成超时
+        """
+        return await self._execute_async_tts(
+            operation_name="Custom Voice",
+            sync_func=self.model.generate_custom_voice,
+            timeout=timeout,
+            text=text,
+            language=language,
+            speaker=speaker,
+            instruct=instruct,
+            **kwargs
+        )
+
+    async def voice_design_synthesize_async(
+        self,
+        text: str,
+        design_prompt: str,
+        language: str = "Chinese",
+        timeout: float = DEFAULT_TTS_TIMEOUT,
+        **kwargs
+    ) -> Tuple[np.ndarray, int]:
+        """
+        使用 Voice Design 模式生成语音 (异步版本)
+
+        Args:
+            text: 输入文本
+            design_prompt: 声音设计描述
+            language: 语言
+            timeout: 超时时间（秒），默认300秒
+            **kwargs: 其他参数
+
+        Returns:
+            (audio_data, sample_rate)
+
+        Raises:
+            TTSModelNotLoadedError: 模型未加载
+            TTSInvalidParameterError: 输入文本为空
+            TTSTimeoutError: 合成超时
+        """
+        return await self._execute_async_tts(
+            operation_name="Voice Design",
+            sync_func=self.model.generate_voice_design,
+            timeout=timeout,
+            text=text,
+            language=language,
+            instruct=design_prompt,
+            **kwargs
+        )
+
+    async def voice_clone_synthesize_async(
+        self,
+        text: str,
+        ref_audio: str,
+        ref_text: str,
+        clone_prompt=None,
+        x_vector_only: bool = False,
+        timeout: float = DEFAULT_TTS_TIMEOUT,
+        **kwargs
+    ) -> Tuple[np.ndarray, int]:
+        """
+        使用 Voice Clone 模式生成语音 (异步版本)
+
+        Args:
+            text: 输入文本
+            ref_audio: 参考音频路径
+            ref_text: 参考文本
+            clone_prompt: 已保存的 clone_prompt (可选)
+            x_vector_only: 是否仅使用 x_vector (快速模式)
+            timeout: 超时时间（秒），默认300秒
+            **kwargs: 其他参数
+
+        Returns:
+            (audio_data, sample_rate)
+
+        Raises:
+            TTSModelNotLoadedError: 模型未加载
+            TTSInvalidParameterError: 输入文本为空
+            TTSTimeoutError: 合成超时
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        if not text or not text.strip():
+            raise TTSInvalidParameterError("输入文本不能为空")
+
+        # 构建参数
+        params = {
+            "text": text,
+            "language": "Auto",
+            **kwargs
+        }
+
+        if clone_prompt:
+            params["voice_clone_prompt"] = clone_prompt
+        else:
+            params.update({
+                "ref_audio": ref_audio,
+                "ref_text": ref_text,
+                "x_vector_only_mode": x_vector_only
+            })
+
+        logger.info(f"[Async] 正在生成语音 (Voice Clone): {text[:50]}...")
+
+        loop = asyncio.get_running_loop()
+        executor = self._get_executor()
+
+        try:
+            wavs, sr = await asyncio.wait_for(
+                loop.run_in_executor(
+                    executor,
+                    lambda: self.model.generate_voice_clone(**params)
+                ),
+                timeout=timeout
+            )
+
+            logger.info("✓ [Async] 语音生成成功")
+            return wavs[0], sr
+
+        except asyncio.TimeoutError:
+            logger.error(f"✗ [Async] 语音生成超时 (>{timeout}s)")
+            raise TTSTimeoutError(f"操作超时: Voice Clone")
+        except Exception as e:
+            logger.error(f"✗ [Async] 语音生成失败: {str(e)}")
+            raise TTSSynthesisError(f"语音合成失败: Voice Clone") from e
+
+    async def create_voice_clone_prompt_async(
+        self,
+        ref_audio: str,
+        ref_text: str,
+        x_vector_only: bool = False,
+        timeout: float = DEFAULT_TTS_TIMEOUT
+    ) -> Tuple[np.ndarray, int]:
+        """
+        创建可重用的声音克隆 prompt (异步版本)
+
+        Args:
+            ref_audio: 参考音频路径
+            ref_text: 参考文本
+            x_vector_only: 是否仅使用 x_vector
+            timeout: 超时时间（秒），默认300秒
+
+        Returns:
+            prompt_items (可传递给 generate_voice_clone 的 voice_clone_prompt 参数)
+
+        Raises:
+            TTSModelNotLoadedError: 模型未加载
+            TTSTimeoutError: 特征提取超时
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        logger.info("[Async] 正在提取声音特征...")
+
+        loop = asyncio.get_running_loop()
+        executor = self._get_executor()
+
+        try:
+            prompt_items = await asyncio.wait_for(
+                loop.run_in_executor(
+                    executor,
+                    lambda: self.model.create_voice_clone_prompt(
+                        ref_audio=ref_audio,
+                        ref_text=ref_text,
+                        x_vector_only_mode=x_vector_only
+                    )
+                ),
+                timeout=timeout
+            )
+
+            logger.info("✓ [Async] 声音特征提取完成")
+            return prompt_items
+
+        except asyncio.TimeoutError:
+            logger.error(f"✗ [Async] 特征提取超时 (>{timeout}s)")
+            raise TTSTimeoutError(f"操作超时: Voice Clone Prompt")
+        except Exception as e:
+            logger.error(f"✗ [Async] 特征提取失败: {str(e)}")
+            raise TTSSynthesisError(f"特征提取失败") from e
 
     # ========== 兼容旧 API ==========
 

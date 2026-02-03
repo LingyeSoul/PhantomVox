@@ -88,7 +88,6 @@ class SettingsView(ft.Container):
         self.save_button = ft.Button(
             "保存设置",
             icon=ft.Icons.SAVE,
-            bgcolor=ft.Colors.BLUE,
             style=self.BStyle,
             on_click=self._on_save_click,
             disabled=True
@@ -97,7 +96,6 @@ class SettingsView(ft.Container):
         self.reset_button = ft.Button(
             "重置默认",
             icon=ft.Icons.RESTORE,
-            bgcolor=ft.Colors.ORANGE,
             style=self.BStyle,
             on_click=self._on_reset_click
         )

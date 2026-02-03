@@ -97,7 +97,6 @@ class AudioControlPanel(ft.Container):
         self.play_button = ft.Button(
             "播放",
             icon=ft.Icons.PLAY_ARROW,
-            bgcolor=ft.Colors.GREEN,
             style=ft.ButtonStyle(
                 text_style=ft.TextStyle(font_family="Microsoft YaHei")
             ),
@@ -108,7 +107,6 @@ class AudioControlPanel(ft.Container):
         self.stop_button = ft.Button(
             "停止",
             icon=ft.Icons.STOP,
-            bgcolor=ft.Colors.RED_400,
             style=ft.ButtonStyle(
                 text_style=ft.TextStyle(font_family="Microsoft YaHei")
             ),
@@ -119,7 +117,6 @@ class AudioControlPanel(ft.Container):
         self.save_button = ft.Button(
             "保存音频",
             icon=ft.Icons.SAVE,
-            bgcolor=ft.Colors.BLUE,
             style=ft.ButtonStyle(
                 text_style=ft.TextStyle(font_family="Microsoft YaHei")
             ),

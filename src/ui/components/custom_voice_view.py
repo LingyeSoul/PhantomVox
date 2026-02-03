@@ -190,7 +190,6 @@ class CustomVoiceView(ft.Container):
                     ft.Button(
                         "生成语音",
                         icon=ft.Icons.SEND,
-                        bgcolor=ft.Colors.BLUE,
                         style=ft.ButtonStyle(
                             text_style=ft.TextStyle(
                                 font_family="Microsoft YaHei",
@@ -353,14 +352,13 @@ class CustomVoiceView(ft.Container):
             except:
                 pass
 
-            # 在后台线程中执行TTS生成
-            import asyncio
-            audio, sr = await asyncio.to_thread(
-                tts_engine.custom_voice_synthesize,
+            # 在后台线程中执行TTS生成（使用异步API）
+            audio, sr = await tts_engine.custom_voice_synthesize_async(
                 text=text,
                 speaker=speaker,
                 language=language,
-                instruct=instruct
+                instruct=instruct,
+                timeout=300.0
             )
 
             self.terminal.add_log("✓ 语音生成成功")
