@@ -2,7 +2,6 @@
 
 # UI framework
 flet==0.80.5
-flet-audio==0.80.5
 
 # TTS engine
 qwen-tts>=0.0.5
