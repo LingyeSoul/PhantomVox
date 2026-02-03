@@ -69,6 +69,7 @@ class AboutView(ft.Container):
                         ft.Text("PhantomVox", size=20, weight=ft.FontWeight.BOLD),
                     ], spacing=10),
                     ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
+                    ft.Text("作者: 泠夜Soul", size=14),
                     ft.Text(f"版本: {self.version}", size=14),
                     ft.Text(
                         "基于 Qwen3-TTS 的本地文本转语音应用",
