@@ -56,6 +56,14 @@ class PhantomUI:
         # 当前视图索引
         self._current_view_index = 0
 
+        # 当前选择的模型（用于初始化 TTS 引擎）
+        self._current_model_id = None
+
+        # 初始化时设置默认模型
+        usable_models = self.model_manager.list_usable_models()
+        if usable_models:
+            self._current_model_id = usable_models[0]
+
         # 三个新视图（延迟初始化）
         self.custom_voice_view = None
         self.voice_design_view = None
@@ -75,6 +83,9 @@ class PhantomUI:
 
         # 文件选择器
         self._file_picker = ft.FilePicker()
+
+        # 终端展开状态
+        self._terminal_expanded = True
 
         # 初始化 AppBar
         self.app_bar = PhantomAppBar(
@@ -96,12 +107,22 @@ class PhantomUI:
             self.terminal.add_log("正在初始化 TTS 引擎...")
 
             try:
-                # 从下拉框获取选中的模型
-                model_id = self.model_dropdown.value
+                # 使用 _current_model_id 或尝试获取选中的模型
+                model_id = self._current_model_id
 
+                self.terminal.add_log(f"DEBUG: _current_model_id = {model_id}")
+
+                # 如果没有指定模型，尝试从下拉框获取
                 if not model_id:
-                    # 使用第一个可用模型
+                    model_id = getattr(self, 'model_dropdown', None)
+                    if model_id is not None:
+                        model_id = model_id.value
+                    self.terminal.add_log(f"DEBUG: 从 model_dropdown 获取 model_id = {model_id}")
+
+                # 如果仍然没有模型，使用第一个可用模型
+                if not model_id:
                     usable_models = self.model_manager.list_usable_models()
+                    self.terminal.add_log(f"DEBUG: 可用模型列表 = {usable_models}")
 
                     if not usable_models:
                         # 没有可用的模型
@@ -115,6 +136,7 @@ class PhantomUI:
                         raise RuntimeError("没有可用的 TTS 模型")
 
                     model_id = usable_models[0]
+                    self.terminal.add_log(f"DEBUG: 使用第一个可用模型 = {model_id}")
 
                 model_path = self.model_manager.get_model_path(model_id)
 
@@ -127,11 +149,23 @@ class PhantomUI:
 
                 model_info = self.model_manager.get_model_info(model_id)
                 self.terminal.add_log(f"使用模型: {model_info.name if model_info else model_id}")
+                self.terminal.add_log(f"模型ID: {model_id}")
                 self.terminal.add_log(f"模型路径: {model_path}")
                 self.terminal.add_log(f"设备: {device}")
 
+                # 根据模型ID确定模型类型
+                if "customvoice" in model_id:
+                    model_type = "CustomVoice"
+                elif "voicedesign" in model_id:
+                    model_type = "VoiceDesign"
+                elif "base" in model_id:
+                    model_type = "Base"
+                else:
+                    model_type = None  # 默认类型
+
                 self._tts_engine = QwenEngine(
                     model_path=str(model_path),
+                    model_type=model_type,
                     device=device,
                     dtype=dtype,
                     attn_implementation=attn_implementation
@@ -290,7 +324,8 @@ class PhantomUI:
                 terminal=self.terminal,
                 voice_library=self.voice_library,
                 config_manager=self.config_manager,
-                model_manager=self.model_manager
+                model_manager=self.model_manager,
+                on_clear_engine_cache=lambda model_id: self._clear_tts_engine_cache(model_id)
             )
         return self.custom_voice_view
 
@@ -304,7 +339,8 @@ class PhantomUI:
                 terminal=self.terminal,
                 voice_library=self.voice_library,
                 config_manager=self.config_manager,
-                model_manager=self.model_manager
+                model_manager=self.model_manager,
+                on_clear_engine_cache=lambda model_id: self._clear_tts_engine_cache(model_id)
             )
         return self.voice_design_view
 
@@ -318,7 +354,8 @@ class PhantomUI:
                 terminal=self.terminal,
                 voice_library=self.voice_library,
                 config_manager=self.config_manager,
-                model_manager=self.model_manager
+                model_manager=self.model_manager,
+                on_clear_engine_cache=lambda model_id: self._clear_tts_engine_cache(model_id)
             )
         return self.voice_clone_view
 
@@ -339,6 +376,78 @@ class PhantomUI:
         if self._tts_engine is not None:
             self._tts_engine = None
             self.terminal.add_log("设置已更改，TTS 引擎将重新初始化")
+
+    def _clear_tts_engine_cache(self, model_id: str = None):
+        """清除 TTS 引擎缓存以强制重新初始化
+
+        Args:
+            model_id: 可选，指定要使用的模型 ID
+        """
+        self.terminal.add_log(f"DEBUG: _clear_tts_engine_cache 被调用，model_id = {model_id}")
+        self.terminal.add_log(f"DEBUG: 更新前 _current_model_id = {self._current_model_id}")
+
+        if model_id:
+            self._current_model_id = model_id
+            self.terminal.add_log(f"DEBUG: 已设置 _current_model_id = {self._current_model_id}")
+
+            # 同步所有视图的下拉框
+            self._sync_model_dropdowns(model_id)
+
+        if self._tts_engine is not None:
+            self._tts_engine = None
+            self.terminal.add_log("TTS 引擎缓存已清除，将使用新选择的模型")
+        else:
+            self.terminal.add_log("TTS 引擎未初始化，无需清除缓存")
+
+    def _sync_model_dropdowns(self, model_id: str):
+        """同步所有视图的模型下拉框选择
+
+        Args:
+            model_id: 要同步到的模型 ID
+        """
+        if self.custom_voice_view and hasattr(self.custom_voice_view, 'model_dropdown'):
+            self.custom_voice_view.model_dropdown.value = model_id
+            try:
+                self.custom_voice_view.model_dropdown.update()
+            except RuntimeError:
+                pass
+
+        if self.voice_design_view and hasattr(self.voice_design_view, 'model_dropdown'):
+            self.voice_design_view.model_dropdown.value = model_id
+            try:
+                self.voice_design_view.model_dropdown.update()
+            except RuntimeError:
+                pass
+
+        if self.voice_clone_view and hasattr(self.voice_clone_view, 'model_dropdown'):
+            self.voice_clone_view.model_dropdown.value = model_id
+            try:
+                self.voice_clone_view.model_dropdown.update()
+            except RuntimeError:
+                pass
+
+    def _refresh_all_model_dropdowns(self):
+        """刷新所有视图的模型下拉框选项"""
+        # 刷新 CustomVoiceView
+        if self.custom_voice_view and hasattr(self.custom_voice_view, 'refresh_model_dropdown'):
+            try:
+                self.custom_voice_view.refresh_model_dropdown()
+            except Exception as e:
+                logger.error(f"刷新 CustomVoiceView 模型下拉框失败: {str(e)}")
+
+        # 刷新 VoiceDesignView
+        if self.voice_design_view and hasattr(self.voice_design_view, 'refresh_model_dropdown'):
+            try:
+                self.voice_design_view.refresh_model_dropdown()
+            except Exception as e:
+                logger.error(f"刷新 VoiceDesignView 模型下拉框失败: {str(e)}")
+
+        # 刷新 VoiceCloneView
+        if self.voice_clone_view and hasattr(self.voice_clone_view, 'refresh_model_dropdown'):
+            try:
+                self.voice_clone_view.refresh_model_dropdown()
+            except Exception as e:
+                logger.error(f"刷新 VoiceCloneView 模型下拉框失败: {str(e)}")
 
     def _build_model_view(self) -> ft.Control:
         """构建模型管理视图"""
@@ -515,17 +624,60 @@ class PhantomUI:
             self._get_custom_voice_view()
         ], expand=True)
 
+        # 创建终端日志容器引用（用于折叠/展开）
+        self._terminal_logs_container = ft.Container(
+            content=self.terminal.logs,
+            border=ft.Border.all(1, ft.Colors.GREY_400),
+            border_radius=8,
+            padding=5,
+            height=150,
+        )
+
+        # 创建右侧主容器（包含内容和终端）
+        right_panel = ft.Column([
+            # 内容区域
+            ft.Container(
+                content=self.content_area,
+                expand=True,
+                padding=20
+            ),
+
+            # 分隔线
+            ft.Divider(height=1, color=ft.Colors.GREY_300),
+
+            # 全局固定终端
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Text("运行日志", size=14, weight=ft.FontWeight.BOLD),
+                        ft.Container(expand=True),
+                        ft.IconButton(
+                            icon=ft.Icons.CLEAR,
+                            icon_size=18,
+                            tooltip="清空日志",
+                            on_click=self._on_clear_terminal
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.EXPAND_LESS,
+                            icon_size=18,
+                            tooltip="折叠/展开",
+                            on_click=self._on_toggle_terminal
+                        )
+                    ], spacing=10),
+                    self._terminal_logs_container,
+                ], spacing=5),
+                padding=ft.padding.symmetric(horizontal=20, vertical=10),
+                bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+            )
+        ], expand=True, spacing=0)
+
         # 主布局
         main_view = ft.Row([
             # 左侧导航栏
             rail,
             ft.VerticalDivider(width=1),
-            # 右侧内容区域
-            ft.Container(
-                content=self.content_area,
-                expand=True,
-                padding=20
-            )
+            # 右侧主容器
+            right_panel
         ], expand=True)
 
         return main_view
@@ -601,16 +753,18 @@ class PhantomUI:
                     )
 
                     # 使用 run_task 在主线程中执行 UI 操作
-                    def update_ui_on_success():
+                    async def update_ui_on_success():
                         self.terminal.add_log(f"✓ 模型下载完成: {model_info.name}")
-                        # 刷新列表
+                        # 刷新模型管理页面的列表
                         self._populate_model_list()
+                        # 刷新各个视图的模型下拉框
+                        self._refresh_all_model_dropdowns()
                         # 关闭对话框
                         self.page.pop_dialog()
                         # 显示成功提示
                         self.page.show_dialog(ft.SnackBar(ft.Text(f"✓ {model_info.name} 下载完成")))
 
-                    def update_ui_on_failure():
+                    async def update_ui_on_failure():
                         self.terminal.add_log(f"✗ 下载失败")
                         self.page.pop_dialog()
                         self.page.show_dialog(ft.SnackBar(ft.Text("✗ 下载失败")))
@@ -625,9 +779,9 @@ class PhantomUI:
                     logger.exception("模型下载异常")
                     try:
                         self.page.pop_dialog()
-                        self.page.run_task(
-                            lambda: self.page.show_dialog(ft.SnackBar(ft.Text(f"✗ 下载失败: {str(ex)}")))
-                        )
+                        async def show_error_dialog():
+                            self.page.show_dialog(ft.SnackBar(ft.Text(f"✗ 下载失败: {str(ex)}")))
+                        self.page.run_task(show_error_dialog)
                     except:
                         pass
 
@@ -678,8 +832,10 @@ class PhantomUI:
                     success = await self.model_manager.delete_model(model_id)
                     if success:
                         self.terminal.add_log(f"✓ 模型已删除: {model_info.name}")
-                        # 刷新模型列表
+                        # 刷新模型管理页面的列表
                         self._populate_model_list()
+                        # 刷新各个视图的模型下拉框
+                        self._refresh_all_model_dropdowns()
                         # 刷新整个视图以确保UI更新
                         self.model_list.update()
                     else:
@@ -731,18 +887,31 @@ class PhantomUI:
             """异步关闭应用"""
             try:
                 # 关闭对话框
-                self.page.pop_dialog()
+                try:
+                    self.page.pop_dialog()
+                except RuntimeError:
+                    # 会话已关闭，继续清理
+                    pass
 
                 # 保存配置
                 self.config_manager.save_config()
 
                 # 隐藏窗口（立即响应）
-                self.page.window.visible = False
-                self.page.window.prevent_close = False
-                self.page.update()
+                try:
+                    self.page.window.visible = False
+                    self.page.window.prevent_close = False
+                    self.page.update()
+                except RuntimeError:
+                    # 会话已关闭，继续清理
+                    pass
 
                 # 关闭窗口
-                await self.page.window.close()
+                try:
+                    await self.page.window.close()
+                except RuntimeError as e:
+                    # 如果是会话已关闭错误，这是正常的，不需要记录
+                    if "Session closed" not in str(e):
+                        raise
             except Exception as ex:
                 logger.exception("关闭应用时出错")
                 try:
@@ -774,3 +943,28 @@ class PhantomUI:
         )
 
         self.page.show_dialog(dialog)
+
+    def _on_clear_terminal(self, e):
+        # 清空终端日志
+        self.terminal.clear_terminal()
+
+    def _on_toggle_terminal(self, e):
+        # 折叠/展开终端
+        if self._terminal_expanded:
+            # 折叠
+            self._terminal_logs_container.height = 0
+            self._terminal_logs_container.visible = False
+            e.control.icon = ft.Icons.EXPAND_MORE
+        else:
+            # 展开
+            self._terminal_logs_container.height = 150
+            self._terminal_logs_container.visible = True
+            e.control.icon = ft.Icons.EXPAND_LESS
+        self._terminal_expanded = not self._terminal_expanded
+        self._terminal_logs_container.update()
+        e.control.update()
+
+
+
+
+

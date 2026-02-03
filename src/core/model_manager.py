@@ -412,3 +412,28 @@ class ModelManager:
             if is_usable:
                 usable.append(model_id)
         return usable
+
+    def list_usable_models_by_type(self, model_type: str) -> list:
+        """
+        列出指定类型的可用模型
+
+        Args:
+            model_type: 模型类型 ("customvoice", "voicedesign", "base")
+
+        Returns:
+            list: 可用的模型 ID 列表
+        """
+        usable = []
+        for model_id in self.AVAILABLE_MODELS.keys():
+            # 排除分词器模型
+            if "tokenizer" in model_id.lower():
+                continue
+
+            # 检查模型类型是否匹配
+            if model_type.lower() not in model_id.lower():
+                continue
+
+            is_usable, _ = self.check_model_usable(model_id)
+            if is_usable:
+                usable.append(model_id)
+        return usable

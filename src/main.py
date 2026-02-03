@@ -27,7 +27,7 @@ async def main(page: ft.Page):
     await page.window.center()
 
     # 自定义标题将通过 AppBar 设置，这里清空标准标题
-    page.title = ""
+    page.title = "PhantomVox"
     page.theme = ft.Theme(
         color_scheme_seed=ft.Colors.BLUE,
         font_family="Microsoft YaHei"
@@ -42,7 +42,9 @@ async def main(page: ft.Page):
     page.window.width = 950
     page.window.height = 750
     page.window.resizable = False
-
+    page.window.min_height=750
+    page.window.min_width=950
+    page.window.maximizable = False
     page.window.title_bar_hidden = True
 
 
@@ -83,6 +85,7 @@ async def main(page: ft.Page):
 
         # 显示窗口
         page.window.visible = True
+        await page.window.center()
         page.update()
 
         app_logger.info("PhantomVox 启动成功")
@@ -93,6 +96,7 @@ async def main(page: ft.Page):
                 ft.Text("欢迎使用 PhantomVox！请先在「模型管理」中下载 TTS 模型。"),
                 duration=5000
             ))
+        page.update()
 
     except Exception as e:
         app_logger.error(f"启动失败: {str(e)}", exc_info=True)
@@ -186,4 +190,4 @@ if __name__ == "__main__":
     )
 
     # 运行 Flet 应用
-    ft.run(main)
+    ft.run(main,view=ft.AppView.FLET_APP_HIDDEN)

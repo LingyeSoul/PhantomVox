@@ -7,6 +7,8 @@
 import flet as ft
 import logging
 
+from ui.components.audio_progress_bar import AudioProgressBar
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,6 +88,7 @@ class AudioControlPanel(ft.Container):
         on_play=None,
         on_stop=None,
         on_save=None,
+        on_seek=None,
         has_audio=False
     ):
         self.has_audio = has_audio
@@ -123,9 +126,16 @@ class AudioControlPanel(ft.Container):
             on_click=on_save
         )
 
+        # 进度条
+        self.progress_bar = AudioProgressBar(on_seek=on_seek)
+
         super().__init__(
-            content=ft.Row(
-                [self.play_button, self.stop_button, self.save_button],
+            content=ft.Column(
+                [
+                    ft.Row([self.play_button, self.stop_button, self.save_button], spacing=10),
+                    ft.Divider(height=10),
+                    self.progress_bar
+                ],
                 spacing=10
             )
         )
@@ -136,6 +146,18 @@ class AudioControlPanel(ft.Container):
         self.play_button.disabled = not has_audio
         self.save_button.disabled = not has_audio
         self.update()
+
+    def update_progress(self, progress: float, current: float, total: float):
+        """更新播放进度"""
+        self.progress_bar.update_progress(progress, current, total)
+
+    def set_duration(self, duration: float):
+        """设置音频时长并启用进度条"""
+        self.progress_bar.set_duration(duration)
+
+    def reset_progress(self):
+        """重置进度条"""
+        self.progress_bar.reset()
 
 
 class ParameterSliders(ft.Container):

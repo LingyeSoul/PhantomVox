@@ -7,9 +7,11 @@
 import flet as ft
 import logging
 import asyncio
+import os
 
 from ui.components.shared_controls import TextPanel, AudioControlPanel
 from ui.components.voice_library import VoiceLibrary
+from tts.audio_temp_manager import AudioTempManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,8 @@ class VoiceDesignView(ft.Container):
         terminal,
         voice_library: VoiceLibrary,
         config_manager,
-        model_manager
+        model_manager,
+        on_clear_engine_cache=None
     ):
         # 使用私有变量存储 page，避免与 ft.Container 的 page 属性冲突
         self._page = page
@@ -35,10 +38,15 @@ class VoiceDesignView(ft.Container):
         self.voice_library = voice_library
         self.config_manager = config_manager
         self.model_manager = model_manager
+        self.on_clear_engine_cache = on_clear_engine_cache
 
-        # 当前生成的音频
+        # 当前生成的音频和临时文件路径
         self._last_audio = None
+        self._temp_audio_file = None
         self._is_generating = False
+
+        # 音频临时文件管理器
+        self._audio_temp_manager = AudioTempManager()
 
         # 构建UI
         super().__init__(
@@ -48,8 +56,8 @@ class VoiceDesignView(ft.Container):
 
     def _build_ui(self):
         """构建UI界面"""
-        # 模型选择下拉框
-        usable_models = self.model_manager.list_usable_models()
+        # 模型选择下拉框 - 只显示 VoiceDesign 模型
+        usable_models = self.model_manager.list_usable_models_by_type("voicedesign")
         model_options = []
         for model_id in usable_models:
             model_info = self.model_manager.get_model_info(model_id)
@@ -63,7 +71,8 @@ class VoiceDesignView(ft.Container):
             value=default_model,
             width=200,
             text_style=ft.TextStyle(font_family="Microsoft YaHei"),
-            disabled=len(usable_models) == 0
+            disabled=len(usable_models) == 0,
+            on_select=self._on_model_changed
         )
 
         # 声音描述输入框
@@ -139,7 +148,16 @@ class VoiceDesignView(ft.Container):
             on_play=self._on_play,
             on_stop=self._on_stop,
             on_save=self._on_save,
+            on_seek=self._on_seek,
             has_audio=False
+        )
+
+        # 音频文件名自定义输入框
+        self.audio_filename_input = ft.TextField(
+            label="音频文件名（可选，留空则自动生成）",
+            hint_text="例如: 我的语音",
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            expand=True
         )
 
         # 右侧控制面板
@@ -213,6 +231,14 @@ class VoiceDesignView(ft.Container):
 
                     ft.Divider(),
 
+                    # 音频文件名设置
+                    ft.Column([
+                        ft.Text("保存设置", size=14, weight=ft.FontWeight.BOLD),
+                        self.audio_filename_input,
+                    ], spacing=5),
+
+                    ft.Divider(),
+
                     # 设计历史
                     ft.Column([
                         ft.Text("设计历史", size=14, weight=ft.FontWeight.BOLD),
@@ -250,14 +276,6 @@ class VoiceDesignView(ft.Container):
 
                         ft.Text("文本输入", size=16, weight=ft.FontWeight.BOLD),
                         self.text_panel,
-
-                        ft.Divider(),
-
-                        # 终端日志
-                        ft.Column([
-                            ft.Text("运行日志", size=14, weight=ft.FontWeight.BOLD),
-                            self.terminal.view,
-                        ], spacing=5),
                     ], spacing=10),
                     padding=10,
                     expand=True
@@ -269,6 +287,45 @@ class VoiceDesignView(ft.Container):
             spacing=20,
             expand=True
         )
+
+    def _on_model_changed(self, _):
+        """模型选择改变事件"""
+        if self.on_clear_engine_cache:
+            self.on_clear_engine_cache(self.model_dropdown.value)
+        self.terminal.add_log(f"模型已切换: {self.model_dropdown.value}")
+
+    def refresh_model_dropdown(self):
+        """刷新模型下拉框选项"""
+        try:
+            # 获取当前选中的模型
+            current_value = self.model_dropdown.value
+
+            # 重新获取 VoiceDesign 模型列表
+            usable_models = self.model_manager.list_usable_models_by_type("voicedesign")
+            model_options = []
+            for model_id in usable_models:
+                model_info = self.model_manager.get_model_info(model_id)
+                if model_info:
+                    model_options.append(ft.dropdown.Option(model_id, model_info.name))
+
+            # 更新下拉框选项
+            self.model_dropdown.options = model_options
+
+            # 如果当前选中的模型仍然可用，保持选中；否则选择第一个
+            if current_value in usable_models:
+                self.model_dropdown.value = current_value
+            elif usable_models:
+                self.model_dropdown.value = usable_models[0]
+            else:
+                self.model_dropdown.value = None
+
+            # 更新禁用状态
+            self.model_dropdown.disabled = len(usable_models) == 0
+
+            # 刷新显示
+            self.model_dropdown.update()
+        except Exception as e:
+            logger.error(f"刷新模型下拉框失败: {str(e)}", exc_info=True)
 
     def _on_design_change(self, e):
         """声音描述输入变化事件"""
@@ -384,6 +441,12 @@ class VoiceDesignView(ft.Container):
         self._is_generating = True
         self.terminal.add_log("正在生成语音...")
 
+        # 强制UI更新，让第一条日志立即显示
+        try:
+            self._page.update()
+        except:
+            pass
+
         try:
             # 获取TTS引擎
             tts_engine = self.tts_engine_getter()
@@ -391,14 +454,31 @@ class VoiceDesignView(ft.Container):
             # 生成语音
             self.terminal.add_log(f"声音描述: {design_prompt[:50]}...")
 
-            audio, sr = tts_engine.voice_design_synthesize(
+            # 强制UI更新，让参数日志立即显示
+            try:
+                self._page.update()
+            except:
+                pass
+
+            # 在后台线程中执行TTS生成
+            import asyncio
+            audio, sr = await asyncio.to_thread(
+                tts_engine.voice_design_synthesize,
                 text=text,
                 design_prompt=design_prompt,
                 language="Chinese"
             )
 
-            self._last_audio = (audio, sr)
             self.terminal.add_log("✓ 语音生成成功")
+
+            # 使用临时文件管理器保存音频
+            if self._temp_audio_file:
+                self._audio_temp_manager.cleanup_file(self._temp_audio_file)
+
+            self._temp_audio_file = self._audio_temp_manager.save_audio(audio, sr, prefix="design")
+
+            # 保存音频数据用于计算时长
+            self._last_audio = (audio, sr)
 
             # 保存到设计历史
             self.voice_library.save_design_history("自定义设计", design_prompt)
@@ -423,17 +503,48 @@ class VoiceDesignView(ft.Container):
 
     async def _on_play(self, e):
         """播放音频"""
-        if not self._last_audio:
+        if not self._temp_audio_file or not self._audio_temp_manager.file_exists(self._temp_audio_file):
+            self.terminal.add_log("✗ 没有可播放的音频")
             return
 
         try:
             audio_manager = self.audio_manager_getter()
-            audio_data, sr = self._last_audio
-            await audio_manager.play(audio_data, sr)
+
+            # 设置进度回调
+            async def progress_callback(p, c, t):
+                self.audio_control.update_progress(p, c, t)
+            audio_manager.set_progress_callback(progress_callback)
+
+            # 设置播放完成回调
+            async def completion_callback():
+                self.audio_control.reset_progress()
+            audio_manager.set_completion_callback(completion_callback)
+
+            # 获取并设置时长
+            if self._last_audio:
+                audio_data, sr = self._last_audio
+                duration = audio_manager.get_audio_duration(audio_data)
+                self.audio_control.set_duration(duration)
+
+            # 从文件播放
+            await audio_manager.play_from_file(self._temp_audio_file)
             self.terminal.add_log("正在播放音频...")
         except Exception as e:
             logger.error(f"播放音频失败: {str(e)}", exc_info=True)
             self.terminal.add_log(f"✗ 播放失败: {str(e)}")
+
+    async def _on_seek(self, e):
+        """处理进度条拖动"""
+        try:
+            audio_manager = self.audio_manager_getter()
+            progress = e.control.value
+
+            if hasattr(audio_manager, '_audio_data') and audio_manager._audio_data is not None:
+                duration = len(audio_manager._audio_data) / audio_manager.sample_rate
+                position = progress * duration
+                await audio_manager.seek(position)
+        except Exception as e:
+            logger.error(f"跳转失败: {str(e)}", exc_info=True)
 
     async def _on_stop(self, e):
         """停止播放"""
@@ -446,13 +557,38 @@ class VoiceDesignView(ft.Container):
 
     async def _on_save(self, e):
         """保存音频"""
-        if not self._last_audio:
+        if not self._temp_audio_file:
+            self.terminal.add_log("✗ 没有可保存的音频")
             return
 
         try:
+            # 获取保存路径
             save_dir = self.config_manager.get("audio.save_directory", "./output")
-            self.terminal.add_log(f"音频保存功能开发中... (保存到: {save_dir})")
+
+            # 获取自定义文件名（如果用户输入了）
+            custom_filename = self.audio_filename_input.value.strip() if self.audio_filename_input.value else None
+
+            # 使用临时文件管理器保存到持久化目录
+            save_path = self._audio_temp_manager.save_to_persistent(
+                self._temp_audio_file,
+                save_dir,
+                prefix="design",
+                custom_filename=custom_filename
+            )
+
+            self.terminal.add_log(f"✓ 音频已保存: {save_path}")
+
+            # 显示成功提示
+            filename = os.path.basename(save_path)
+            self._page.show_dialog(ft.SnackBar(
+                ft.Text(f"音频已保存: {filename}"),
+                bgcolor=ft.Colors.GREEN
+            ))
 
         except Exception as e:
             logger.error(f"保存音频失败: {str(e)}", exc_info=True)
             self.terminal.add_log(f"✗ 保存失败: {str(e)}")
+            self._page.show_dialog(ft.SnackBar(
+                ft.Text(f"保存失败: {str(e)}"),
+                bgcolor=ft.Colors.RED
+            ))
