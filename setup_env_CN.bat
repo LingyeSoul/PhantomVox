@@ -16,7 +16,7 @@ echo [3/4] Installing dependencies...
 "%PYTHON_EXE%" -m pip install -r requirements.txt
 
 echo [4/4] Installing flash-attention...
-"%PYTHON_EXE%" -m pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.6/flash_attn-2.8.3%2Bcu128torch2.9-cp312-cp312-win_amd64.whl
+"%PYTHON_EXE%" -m pip install https://v6.gh-proxy.org/https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.6/flash_attn-2.8.3%2Bcu128torch2.9-cp312-cp312-win_amd64.whl
 
 echo ========================================
 echo Setup completed!
