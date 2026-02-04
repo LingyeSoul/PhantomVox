@@ -14,7 +14,7 @@ import threading
 import asyncio
 
 from api.dependencies import initialize_dependencies, cleanup_dependencies, log_message
-from api.routes import health, status, metadata, tts, openai
+from api.routes import health, status, metadata, tts, openai, tts_stream
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ def create_fastapi_app(
     app.include_router(metadata.router, tags=["Metadata"])
     app.include_router(tts.router, tags=["TTS"])
     app.include_router(openai.router, tags=["OpenAI"])
+    app.include_router(tts_stream.router, tags=["TTS Stream"])
 
     # 根路径 HTML 页面
     @app.get("/", response_class=HTMLResponse)
@@ -156,6 +157,15 @@ def create_fastapi_app(
                     <div class="description">文本转语音合成（支持三种模式）</div>
                 </div>
 
+                <div class="endpoint">
+                    <span class="method">POST</span>
+                    <span class="path">/tts/streaming</span>
+                    <div class="description">
+                        <strong>真正的流式</strong>文本转语音合成（支持三种模式）
+                        <br>边生成边解码边输出，首块延迟降低 50%+
+                    </div>
+                </div>
+
                 <h2>OpenAI 兼容 API <span class="badge badge-openai">OpenAI</span>:</h2>
 
                 <div class="endpoint">
@@ -167,6 +177,15 @@ def create_fastapi_app(
                     </div>
                 </div>
 
+                <div class="endpoint">
+                    <span class="method">POST</span>
+                    <span class="path">/v1/audio/speech/streaming</span>
+                    <div class="description">
+                        OpenAI TTS API 兼容<strong>真正的流式</strong>端点
+                        <br>边生成边解码边输出，首块延迟降低 50%+
+                    </div>
+                </div>
+
                 <h2>示例 cURL:</h2>
                 <pre style="background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto;">
 # PhantomVox API
@@ -174,11 +193,23 @@ curl -X POST http://localhost:PORT/tts \\
   -H "Content-Type: application/json" \\
   -d '{"text": "你好，世界！", "mode": "custom_voice", "speaker": "Vivian"}'
 
+# PhantomVox 流式 API（真正的流式）
+curl -N -X POST http://localhost:PORT/tts/streaming \\
+  -H "Content-Type: application/json" \\
+  -d '{"text": "你好，世界！", "mode": "custom_voice", "speaker": "Vivian"}' \\
+  --output speech.wav
+
 # OpenAI 兼容 API
 curl http://localhost:PORT/v1/audio/speech \\
   -H "Content-Type: application/json" \\
   -d '{"model": "tts-1", "input": "你好，世界！", "voice": "alloy"}' \\
   --output speech.mp3
+
+# OpenAI 兼容流式 API（真正的流式）
+curl -N http://localhost:PORT/v1/audio/speech/streaming \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "tts-1", "input": "你好，世界！", "voice": "alloy"}' \\
+  --output speech.wav
                 </pre>
             </div>
         </body>

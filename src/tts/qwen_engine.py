@@ -5,6 +5,8 @@ Qwen3-TTS 引擎封装
 1. Custom Voice - 使用预设说话人 + 情感指令
 2. Voice Design - 通过自然语言描述设计声音
 3. Voice Clone - 使用参考音频克隆声音
+
+支持流式输出（通过 monkey patch qwen-tts）
 """
 
 from qwen_tts import Qwen3TTSModel
@@ -12,7 +14,8 @@ import logging
 import os
 import numpy as np
 import asyncio
-from typing import Tuple, Optional
+import threading
+from typing import Tuple, Optional, AsyncGenerator, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from .thread_pool_manager import TTSThreadPoolManager
@@ -23,6 +26,7 @@ from .exceptions import (
     TTSTimeoutError,
     TTSSynthesisError
 )
+from .streaming_patch import apply_streaming_patch, get_streaming_generator
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +149,9 @@ class QwenEngine:
         device="cuda:0",
         dtype=None,
         attn_implementation=None,
-        shared_tokenizer_path=None
+        shared_tokenizer_path=None,
+        enable_streaming: bool = True,
+        streaming_chunk_size: int = 32,
     ):
         """
         初始化 Qwen TTS 引擎
@@ -157,6 +163,8 @@ class QwenEngine:
             dtype: 数据类型（可选，传递给 qwen-tts）
             attn_implementation: 注意力实现（可选，传递给 qwen-tts）
             shared_tokenizer_path: 共享 tokenizer 路径（可选，如未指定则自动查找）
+            enable_streaming: 是否启用流式输出（默认 True）
+            streaming_chunk_size: 流式输出块大小（token 数量，默认 32）
         """
         self.model = None
         self.device = device
@@ -165,6 +173,8 @@ class QwenEngine:
         self.dtype = dtype
         self.attn_implementation = attn_implementation
         self.shared_tokenizer_path = shared_tokenizer_path
+        self.enable_streaming = enable_streaming
+        self.streaming_chunk_size = streaming_chunk_size
         self._executor: Optional[ThreadPoolExecutor] = None
         self._load_model()
 
@@ -229,6 +239,22 @@ class QwenEngine:
                 )
 
             logger.info("✓ Qwen3-TTS 模型加载完成")
+
+            # 应用流式生成 patch
+            if self.enable_streaming:
+                try:
+                    # self.model 是 Qwen3TTSModel，它的 model 属性是 Qwen3TTSForConditionalGeneration
+                    # speech_tokenizer 在 Qwen3TTSForConditionalGeneration 上
+                    apply_streaming_patch(
+                        model=self.model.model,
+                        tokenizer=self.model.model.speech_tokenizer,
+                        chunk_size_tokens=self.streaming_chunk_size,
+                    )
+                    logger.info(f"✓ 流式生成 patch 已应用 (chunk_size={self.streaming_chunk_size})")
+                except Exception as e:
+                    logger.warning(f"流式生成 patch 应用失败: {e}")
+                    logger.warning("将使用非流式模式")
+                    self.enable_streaming = False
 
         except Exception as e:
             logger.error(f"✗ 模型加载失败: {str(e)}")
@@ -757,3 +783,423 @@ class QwenEngine:
             ref_text="",  # 旧版本没有参考文本
             x_vector_only=True
         )
+
+    # ============================================
+    # 真正的流式合成 API（基于 monkey patch）
+    # ============================================
+
+    async def custom_voice_synthesize_streaming_async(
+        self,
+        text: str,
+        speaker: str = "Vivian",
+        language: str = "Chinese",
+        instruct: str = "",
+        **kwargs
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        使用 Custom Voice 模式生成语音并流式返回（真正的流式输出）
+
+        通过 monkey patch 拦截底层生成过程，实现边生成边解码边输出
+
+        Args:
+            text: 输入文本
+            speaker: 说话人
+            language: 语言
+            instruct: 情感指令
+            **kwargs: 其他参数
+
+        Yields:
+            Dict[str, Any]: 包含以下键的字典:
+                - 'type': 'audio_chunk', 'done', 或 'error'
+                - 'audio': np.ndarray - 音频数据 (当 type='audio_chunk')
+                - 'sample_rate': int - 采样率
+                - 'is_final': bool - 是否为最后一块
+                - 'progress': str - 进度信息 (如 "128/256 tokens")
+
+        Raises:
+            TTSModelNotLoadedError: 模型未加载或流式 patch 未应用
+            TTSInvalidParameterError: 输入文本为空
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        if not self.enable_streaming:
+            raise TTSModelNotLoadedError("流式输出未启用，请在初始化时设置 enable_streaming=True")
+
+        if not text or not text.strip():
+            raise TTSInvalidParameterError("输入文本不能为空")
+
+        # 检查流式生成器是否可用
+        streaming_gen = get_streaming_generator()
+        if streaming_gen is None:
+            logger.error("流式生成器未初始化")
+            raise TTSModelNotLoadedError("流式生成器未初始化，请检查 patch 是否正确应用")
+
+        logger.info(f"[Streaming] 正在流式生成语音 (Custom Voice): {text[:50]}...")
+
+        # 使用 Queue 实现真正的实时流式输出
+        result_queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        thread_started = threading.Event()
+
+        def run_streaming_generation():
+            # 在工作线程中运行流式生成并实时放入队列
+            try:
+                thread_started.set()
+
+                params = self._prepare_custom_voice_params(
+                    text=text,
+                    speaker=speaker,
+                    language=language,
+                    instruct=instruct,
+                    **kwargs
+                )
+
+                for result in streaming_gen.generate_streaming(**params):
+                    # 将结果放入队列（非阻塞）
+                    asyncio.run_coroutine_threadsafe(
+                        result_queue.put(result),
+                        loop
+                    )
+
+            except Exception as e:
+                logger.error(f"✗ [Streaming] 生成线程异常: {str(e)}", exc_info=True)
+                asyncio.run_coroutine_threadsafe(
+                    result_queue.put({'type': 'error', 'error': str(e)}),
+                    loop
+                )
+
+        # 直接启动线程（不使用 run_in_executor）
+        thread = threading.Thread(target=run_streaming_generation, daemon=True)
+        thread.start()
+        thread_started.wait()  # 等待线程启动
+
+        # 从队列读取并 yield 结果（真正的实时流式）
+        try:
+            while True:
+                result = await result_queue.get()
+                yield result
+
+                if result.get('type') == 'done':
+                    logger.info("✓ [Streaming] 流式生成完成")
+                    break
+                elif result.get('type') == 'error':
+                    error_msg = result.get('error', '未知错误')
+                    logger.error(f"✗ [Streaming] 流式生成失败: {error_msg}")
+                    raise TTSSynthesisError(f"流式生成失败: {error_msg}")
+
+        except TTSSynthesisError:
+            raise
+        except Exception as e:
+            logger.error(f"✗ [Streaming] 流式生成异常: {str(e)}", exc_info=True)
+            yield {
+                'type': 'error',
+                'error': str(e)
+            }
+
+    async def voice_design_synthesize_streaming_async(
+        self,
+        text: str,
+        design_prompt: str,
+        language: str = "Chinese",
+        **kwargs
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        使用 Voice Design 模式生成语音并流式返回（真正的流式输出）
+
+        Args:
+            text: 输入文本
+            design_prompt: 声音设计描述
+            language: 语言
+            **kwargs: 其他参数
+
+        Yields:
+            Dict[str, Any]: 流式生成结果字典
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        if not self.enable_streaming:
+            raise TTSModelNotLoadedError("流式输出未启用")
+
+        if not text or not text.strip():
+            raise TTSInvalidParameterError("输入文本不能为空")
+
+        streaming_gen = get_streaming_generator()
+        if streaming_gen is None:
+            raise TTSModelNotLoadedError("流式生成器未初始化")
+
+        logger.info(f"[Streaming] 正在流式生成语音 (Voice Design): {text[:50]}...")
+
+        # 使用 Queue 实现真正的实时流式输出
+        result_queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        thread_started = threading.Event()
+
+        def run_streaming_generation():
+            try:
+                thread_started.set()
+
+                params = self._prepare_voice_design_params(
+                    text=text,
+                    design_prompt=design_prompt,
+                    language=language,
+                    **kwargs
+                )
+
+                for result in streaming_gen.generate_streaming(**params):
+                    asyncio.run_coroutine_threadsafe(
+                        result_queue.put(result),
+                        loop
+                    )
+
+            except Exception as e:
+                logger.error(f"✗ [Streaming] 生成线程异常: {str(e)}", exc_info=True)
+                asyncio.run_coroutine_threadsafe(
+                    result_queue.put({'type': 'error', 'error': str(e)}),
+                    loop
+                )
+
+        # 直接启动线程
+        thread = threading.Thread(target=run_streaming_generation, daemon=True)
+        thread.start()
+        thread_started.wait()
+
+        try:
+            while True:
+                result = await result_queue.get()
+                yield result
+
+                if result.get('type') == 'done':
+                    logger.info("✓ [Streaming] 流式生成完成")
+                    break
+                elif result.get('type') == 'error':
+                    error_msg = result.get('error', '未知错误')
+                    logger.error(f"✗ [Streaming] 流式生成失败: {error_msg}")
+                    raise TTSSynthesisError(f"流式生成失败: {error_msg}")
+
+        except TTSSynthesisError:
+            raise
+        except Exception as e:
+            logger.error(f"✗ [Streaming] 流式生成异常: {str(e)}", exc_info=True)
+            yield {
+                'type': 'error',
+                'error': str(e)
+            }
+
+    async def voice_clone_synthesize_streaming_async(
+        self,
+        text: str,
+        ref_audio: str,
+        ref_text: str,
+        clone_prompt=None,
+        x_vector_only: bool = False,
+        **kwargs
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        使用 Voice Clone 模式生成语音并流式返回（真正的流式输出）
+
+        Args:
+            text: 输入文本
+            ref_audio: 参考音频路径
+            ref_text: 参考文本
+            clone_prompt: 已保存的 clone_prompt (可选)
+            x_vector_only: 是否仅使用 x_vector (快速模式)
+            **kwargs: 其他参数
+
+        Yields:
+            Dict[str, Any]: 流式生成结果字典
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        if not self.enable_streaming:
+            raise TTSModelNotLoadedError("流式输出未启用")
+
+        if not text or not text.strip():
+            raise TTSInvalidParameterError("输入文本不能为空")
+
+        streaming_gen = get_streaming_generator()
+        if streaming_gen is None:
+            raise TTSModelNotLoadedError("流式生成器未初始化")
+
+        logger.info(f"[Streaming] 正在流式生成语音 (Voice Clone): {text[:50]}...")
+
+        # 使用 Queue 实现真正的实时流式输出
+        result_queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        thread_started = threading.Event()
+
+        def run_streaming_generation():
+            try:
+                thread_started.set()
+
+                params = self._prepare_voice_clone_params(
+                    text=text,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    clone_prompt=clone_prompt,
+                    x_vector_only=x_vector_only,
+                    **kwargs
+                )
+
+                for result in streaming_gen.generate_streaming(**params):
+                    asyncio.run_coroutine_threadsafe(
+                        result_queue.put(result),
+                        loop
+                    )
+
+            except Exception as e:
+                logger.error(f"✗ [Streaming] 生成线程异常: {str(e)}", exc_info=True)
+                asyncio.run_coroutine_threadsafe(
+                    result_queue.put({'type': 'error', 'error': str(e)}),
+                    loop
+                )
+
+        # 直接启动线程
+        thread = threading.Thread(target=run_streaming_generation, daemon=True)
+        thread.start()
+        thread_started.wait()
+
+        try:
+            while True:
+                result = await result_queue.get()
+                yield result
+
+                if result.get('type') == 'done':
+                    logger.info("✓ [Streaming] 流式生成完成")
+                    break
+                elif result.get('type') == 'error':
+                    error_msg = result.get('error', '未知错误')
+                    logger.error(f"✗ [Streaming] 流式生成失败: {error_msg}")
+                    raise TTSSynthesisError(f"流式生成失败: {error_msg}")
+
+        except TTSSynthesisError:
+            raise
+        except Exception as e:
+            logger.error(f"✗ [Streaming] 流式生成异常: {str(e)}", exc_info=True)
+            yield {
+                'type': 'error',
+                'error': str(e)
+            }
+
+    # ============================================
+    # 辅助方法：准备生成参数
+    # ============================================
+
+    def _prepare_custom_voice_params(
+        self,
+        text: str,
+        speaker: str,
+        language: str,
+        instruct: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """准备 Custom Voice 生成参数"""
+        # 构建输入文本（参考 qwen-tts 的格式）
+        input_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+
+        # Tokenize
+        input = self.model.processor(text=input_text, return_tensors="pt", padding=True)
+        input_id = input["input_ids"].to(self.device)
+        input_id = input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
+
+        # 构建 instruct_ids
+        instruct_ids = None
+        if instruct and instruct.strip():
+            instruct_text = f"<|im_start|>user\n{instruct}<|im_end|>\n"
+            instruct_input = self.model.processor(text=instruct_text, return_tensors="pt", padding=True)
+            instruct_id = instruct_input["input_ids"].to(self.device)
+            instruct_id = instruct_id.unsqueeze(0) if instruct_id.dim() == 1 else instruct_id
+            instruct_ids = [instruct_id]
+
+        return {
+            "input_ids": [input_id],
+            "instruct_ids": instruct_ids,
+            "languages": [language],
+            "speakers": [speaker],
+            "non_streaming_mode": True,
+            **kwargs
+        }
+
+    def _prepare_voice_design_params(
+        self,
+        text: str,
+        design_prompt: str,
+        language: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """准备 Voice Design 生成参数"""
+        input_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+
+        input = self.model.processor(text=input_text, return_tensors="pt", padding=True)
+        input_id = input["input_ids"].to(self.device)
+        input_id = input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
+
+        instruct_ids = None
+        if design_prompt and design_prompt.strip():
+            instruct_text = f"<|im_start|>user\n{design_prompt}<|im_end|>\n"
+            instruct_input = self.model.processor(text=instruct_text, return_tensors="pt", padding=True)
+            instruct_id = instruct_input["input_ids"].to(self.device)
+            instruct_id = instruct_id.unsqueeze(0) if instruct_id.dim() == 1 else instruct_id
+            instruct_ids = [instruct_id]
+
+        return {
+            "input_ids": [input_id],
+            "instruct_ids": instruct_ids,
+            "languages": [language],
+            "non_streaming_mode": True,
+            **kwargs
+        }
+
+    def _prepare_voice_clone_params(
+        self,
+        text: str,
+        ref_audio: str,
+        ref_text: str,
+        clone_prompt,
+        x_vector_only: bool,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """准备 Voice Clone 生成参数"""
+        input_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+
+        input = self.model.processor(text=input_text, return_tensors="pt", padding=True)
+        input_id = input["input_ids"].to(self.device)
+        input_id = input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
+
+        # 准备 voice_clone_prompt
+        if clone_prompt is None:
+            # 创建新的 prompt
+            prompt_items = self.model.create_voice_clone_prompt(
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                x_vector_only_mode=x_vector_only
+            )
+            voice_clone_prompt = {
+                "ref_code": [it.ref_code for it in prompt_items],
+                "ref_spk_embedding": [it.ref_spk_embedding for it in prompt_items],
+                "x_vector_only_mode": [it.x_vector_only_mode for it in prompt_items],
+                "icl_mode": [it.icl_mode for it in prompt_items],
+            }
+        else:
+            voice_clone_prompt = clone_prompt
+
+        # 准备 ref_ids
+        ref_ids = None
+        if not x_vector_only and ref_text:
+            ref_text_formatted = f"<|im_start|>assistant\n{ref_text}<|im_end|>\n"
+            ref_input = self.model.processor(text=ref_text_formatted, return_tensors="pt", padding=True)
+            ref_id = ref_input["input_ids"].to(self.device)
+            ref_id = ref_id.unsqueeze(0) if ref_id.dim() == 1 else ref_id
+            ref_ids = [ref_id]
+
+        return {
+            "input_ids": [input_id],
+            "ref_ids": ref_ids,
+            "voice_clone_prompt": voice_clone_prompt,
+            "languages": ["Auto"],
+            "non_streaming_mode": False,  # Voice Clone 使用非流式模式
+            **kwargs
+        }
+
