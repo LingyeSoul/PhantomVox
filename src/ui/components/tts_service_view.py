@@ -8,7 +8,7 @@ TTS 服务管理界面
 import flet as ft
 import logging
 from typing import Optional
-from core.tts_server_fastapi import FastAPITSServer as TTSServer
+from core.tts_server import FastAPITSServer as TTSServer
 from core.network import NetworkManager
 
 logger = logging.getLogger(__name__)
