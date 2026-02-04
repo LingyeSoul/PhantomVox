@@ -18,3 +18,9 @@ numpy>=1.24.0
 
 # Version control
 GitPython>=3.1.40
+
+# FastAPI (HTTP server)
+fastapi>=0.128.0
+uvicorn>=0.40.0
+pydantic>=2.12.5
+python-multipart>=0.0.22

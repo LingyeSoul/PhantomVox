@@ -12,6 +12,7 @@ echo.
 
 REM 设置 Python 环境
 set "PYTHON_EXE=%~dp0python\python.exe"
+set "PATH=%~dp0python;%~dp0python\Scripts;%~dp0env;%PATH%"
 
 REM 检查 Python 是否存在
 if not exist "%PYTHON_EXE%" (

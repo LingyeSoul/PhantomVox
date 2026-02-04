@@ -65,6 +65,14 @@ class ConfigManager:
                     "save_logs": True,
                     "log_directory": "./logs"
                 },
+
+                # TTS 服务设置
+                "tts_service": {
+                    "enabled": True,
+                    "port": 8848,
+                    "auto_start": False,
+                    "host": "0.0.0.0"
+                },
                 }
         self.config = self.load_config()
         # 首次运行时检查环境类型

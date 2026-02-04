@@ -3,14 +3,14 @@ echo ========================================
 echo PhantomVox Environment Setup
 echo ========================================
 
-set PYTHON_EXE=python\python.exe
-set "PATH=%~dp0env;%PATH%"
+set PYTHON_EXE=%~dp0python\python.exe
+set "PATH=%~dp0python;%~dp0python\Scripts;%~dp0env;%PATH%"
 
 echo [1/4] Upgrading pip...
 "%PYTHON_EXE%" -m pip install --upgrade pip
 
 echo [2/4] Installing PyTorch 2.9
-"%PYTHON_EXE%" -m pip install torch==2.9.1 torchaudio==2.9.1  --index-url https://download.pytorch.org/whl/cu128
+"%PYTHON_EXE%" -m pip install torch==2.9.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128
 
 echo [3/4] Installing dependencies...
 "%PYTHON_EXE%" -m pip install -r requirements.txt

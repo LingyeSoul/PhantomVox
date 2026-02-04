@@ -4,13 +4,13 @@ echo PhantomVox Command Environment
 echo ========================================
 echo.
 
-REM Set Python environment
-set "PATH=%~dp0python;%~dp0python\Scripts;%~dp0env;%PATH%"
 set "PYTHON_HOME=%~dp0python"
+set "PYTHONPATH=%~dp0python\Lib;%~dp0python\Lib\site-packages"
+set "PATH=%~dp0python;%~dp0python\Scripts;%~dp0env;%PATH%"
 
-echo Python environment activated:
+echo Python environment activated :
 echo   Python:    python\python.exe
-echo   Bin tools: env\ (sox.exe, etc.)
+echo   Bin tools: env\ (sox.exe, etc)
 echo.
 echo You can now use:
 echo   python --version

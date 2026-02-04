@@ -18,6 +18,7 @@ from ui.components.voice_library import VoiceLibrary
 from ui.components.settings_view import SettingsView
 from ui.components.about_view import AboutView
 from ui.components.model_manager_view import ModelManagerView
+from ui.components.tts_service_view import TTSServiceView
 from core.terminal import AsyncTerminal
 from core.model_manager import ModelManager
 from config.config_manager import ConfigManager
@@ -79,6 +80,9 @@ class PhantomUI:
 
         # 模型管理视图（延迟初始化）
         self.model_manager_view = None
+
+        # TTS 服务视图（延迟初始化）
+        self.tts_service_view = None
 
         # UI 样式配置
         self.BStyle = ft.ButtonStyle(
@@ -228,6 +232,11 @@ class PhantomUI:
                     label="模型管理",
                 ),
                 ft.NavigationRailDestination(
+                    icon=ft.Icons.CLOUD,
+                    selected_icon=ft.Icons.CLOUD_DONE,
+                    label="TTS服务",
+                ),
+                ft.NavigationRailDestination(
                     icon=ft.Icons.SETTINGS,
                     selected_icon=ft.Icons.SETTINGS,
                     label="设置",
@@ -274,10 +283,14 @@ class PhantomUI:
             view = self._get_model_manager_view()
             self.content_area.controls.append(view)
         elif self._current_view_index == 4:
+            # TTS 服务页面
+            view = self._get_tts_service_view()
+            self.content_area.controls.append(view)
+        elif self._current_view_index == 5:
             # 设置页面
             view = self._get_settings_view()
             self.content_area.controls.append(view)
-        elif self._current_view_index == 5:
+        elif self._current_view_index == 6:
             # 关于页面
             view = self._get_about_view()
             self.content_area.controls.append(view)
@@ -359,6 +372,23 @@ class PhantomUI:
                 on_models_changed=self._on_models_changed
             )
         return self.model_manager_view
+
+    def _get_tts_service_view(self) -> ft.Control:
+        """获取 TTS 服务视图（延迟初始化）"""
+        if self.tts_service_view is None:
+            self.tts_service_view = TTSServiceView(
+                page=self.page,
+                tts_engine_getter=lambda: self.tts_engine,
+                terminal=self.terminal,
+                config_manager=self.config_manager,
+                on_service_state_change=self._on_service_state_change
+            )
+        return self.tts_service_view
+
+    def _on_service_state_change(self, running: bool):
+        """处理服务状态变化"""
+        status = "运行中" if running else "已停止"
+        self.terminal.add_log(f"TTS 服务状态: {status}")
 
     def _on_models_changed(self):
         """处理模型变更事件"""

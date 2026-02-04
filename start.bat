@@ -4,10 +4,9 @@ echo Starting PhantomVox
 echo ========================================
 echo.
 
-REM Set environment
-set "PATH=%~dp0env;%PATH%"
+set "PATH=%~dp0python;%~dp0python\Scripts;%~dp0env;%PATH%"
 
-python\python.exe src\main.py
+%~dp0python\python.exe src\main.py
 
 echo.
 echo ========================================
