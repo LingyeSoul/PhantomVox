@@ -41,10 +41,13 @@ PhantomVox 是一个使用 Flet 框架构建的跨平台桌面应用，提供高
 
 ### 1. 环境配置
 
+运行环境配置脚本之前，请确保已安装 Python 3.12
+不带_venv后缀的是给整合包使用的脚本
+
 运行环境配置脚本：
 
 ```batch
-setup_env.bat
+setup_env_venv.bat
 ```
 
 该脚本会自动完成以下操作：
@@ -62,7 +65,7 @@ setup_env.bat
 环境配置完成后，直接运行启动脚本：
 
 ```batch
-start.bat
+start_venv.bat
 ```
 
 ### 3. 命令行环境
@@ -70,7 +73,7 @@ start.bat
 如需使用命令行工具（如 pip、python 等）：
 
 ```batch
-cmd.bat
+cmd_venv.bat
 ```
 
 在命令行环境中，你可以：
