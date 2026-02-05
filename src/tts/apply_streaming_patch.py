@@ -1,8 +1,10 @@
 """
 应用 Qwen3-TTS-streaming 的修改到官方 qwen-tts
 
-基于第三方 dffdeeq/Qwen3-TTS-streaming 项目的修改
+基于第三方 Qwen3-TTS-streaming 项目的修改
 提取关键代码并作为 monkey patch 应用
+https://github.com/rekuenkdr/Qwen3-TTS-streaming
+https://github.com/dffdeeq/Qwen3-TTS-streaming
 """
 
 import torch
@@ -325,12 +327,20 @@ def _sample_next_token(
 
 
 def _crossfade(prev_tail: np.ndarray, new_head: np.ndarray) -> np.ndarray:
-    """Crossfade between end of previous chunk and start of new chunk."""
+    """Crossfade between end of previous chunk and start of new chunk using Hann window."""
     n = min(len(prev_tail), len(new_head))
     if n <= 0:
         return new_head
-    w = np.linspace(0.0, 1.0, n, dtype=np.float32)
-    return prev_tail[:n] * (1.0 - w) + new_head[:n] * w
+    t = np.arange(n, dtype=np.float32) / max(n - 1, 1)
+    fade_in = 0.5 * (1 - np.cos(np.pi * t))
+    fade_out = 1 - fade_in
+    return prev_tail[:n] * fade_out + new_head[:n] * fade_in
+
+
+# Default blend samples for boundary blending
+# ~21ms at 24kHz, matches RMS check window for better coverage
+# Lower values may cause clicks, set to 0 to disable
+DEFAULT_BLEND_SAMPLES = 512
 
 
 def _add_ref_code_context(
@@ -666,6 +676,10 @@ def _stream_generate_pcm_impl(
     overlap_samples: int = 0,
     max_frames: int = 10000,
     use_optimized_decode: bool = True,
+    # Two-phase streaming: aggressive first chunk
+    first_chunk_emit_every: int = 0,  # 0 = disabled, use emit_every_frames throughout
+    first_chunk_decode_window: int = 48,
+    first_chunk_frames: int = 48,  # Switch to stable after this many frames
     speed_factor: float = 1.0,
     pitch_factor: float = 1.0,
     **kwargs  # 接受其他未知参数
@@ -674,6 +688,11 @@ def _stream_generate_pcm_impl(
     Stream audio generation, yielding PCM chunks as they are generated.
 
     基于 dffdeeq/Qwen3-TTS-streaming 项目的实现
+
+    Args:
+        first_chunk_emit_every: Emit interval for first chunk phase (0 = disabled, use emit_every_frames)
+        first_chunk_decode_window: Decode window size for first chunk phase
+        first_chunk_frames: Switch to stable settings after this many frames
     """
     # 注意：speed_factor 和 pitch_factor 参数目前未使用
     # 流式生成基于原始 token 序列，不支持变速/变调
@@ -690,13 +709,22 @@ def _stream_generate_pcm_impl(
             non_streaming_mode=non_streaming_mode,
         )
 
-    eos_id = self.config.talker_config.codec_eos_token_id
+    # Multiple EOS tokens that can terminate generation
+    eos_ids = {
+        self.config.talker_config.codec_eos_token_id,  # Primary codec EOS
+        2150,    # Codec EOS (model-specific)
+        2157,    # Secondary codec token
+        151670,  # TTS special token
+        self.config.tts_eos_token_id,   # 151673
+        self.config.im_end_token_id,    # 151645
+        151643,  # TTS special token
+    }
 
-    # Build suppress_tokens list
+    # Build suppress_tokens list (exclude all EOS tokens)
     vocab_size = self.config.talker_config.vocab_size
     suppress_tokens = [
         i for i in range(vocab_size - 1024, vocab_size)
-        if i != eos_id
+        if i not in eos_ids
     ]
 
     torch.compiler.cudagraph_mark_step_begin()
@@ -776,7 +804,8 @@ def _stream_generate_pcm_impl(
         codec_ids = step_out.hidden_states[1]  # [B, num_code_groups]
 
         # Check for EOS in first codebook
-        if codec_ids[0, 0] == eos_id:
+        # Check against all EOS tokens
+        if codec_ids[0, 0].item() in eos_ids:
             break
 
         # Keep on GPU to avoid CPU<->GPU transfers during decode
@@ -790,25 +819,40 @@ def _stream_generate_pcm_impl(
             token = torch.argmax(step_logits, dim=-1)
 
         frames_since_emit += 1
-        if frames_since_emit < emit_every_frames:
+
+        # Two-phase streaming: determine current phase settings
+        total_frames_generated = len(codes_buffer)
+        if first_chunk_emit_every > 0 and total_frames_generated < first_chunk_frames:
+            # Phase 1: Aggressive settings for first chunk (lower latency)
+            current_emit_every = first_chunk_emit_every
+            current_decode_window = first_chunk_decode_window
+            current_use_optimized = False  # Non-optimized allows flexible window size
+        else:
+            # Phase 2: Stable settings (better quality)
+            current_emit_every = emit_every_frames
+            current_decode_window = decode_window_frames
+            current_use_optimized = use_optimized_decode
+
+        if frames_since_emit < current_emit_every:
             continue
         frames_since_emit = 0
 
         # Decode window of codec frames to PCM
-        start = max(0, len(codes_buffer) - decode_window_frames)
+        start = max(0, len(codes_buffer) - current_decode_window)
         window_codes = torch.stack(codes_buffer[start:], dim=0)  # [T, num_code_groups]
 
         # Add ref_code as context prefix for stable decoder context from the start
         window, _ = _add_ref_code_context(
-            window_codes, ref_code_context, ref_code_frames, decode_window_frames
+            window_codes, ref_code_context, ref_code_frames, current_decode_window
         )
 
         # Use optimized decode path when available
-        if use_optimized_decode and hasattr(self.speech_tokenizer, 'decode_streaming'):
+        # Pass pad_to_size to ensure fixed tensor size for torch.compile
+        if current_use_optimized and hasattr(self.speech_tokenizer, 'decode_streaming'):
             wavs, sr = self.speech_tokenizer.decode_streaming(
                 window.to(self.talker.device),
                 use_optimized=True,
-                pad_to_size=decode_window_frames,
+                pad_to_size=current_decode_window,
             )
         else:
             wavs, sr = self.speech_tokenizer.decode([{"audio_codes": window.to(self.talker.device)}])
@@ -816,19 +860,36 @@ def _stream_generate_pcm_impl(
         wav = wavs[0].astype(np.float32)
 
         # Extract only new samples (tail of decoded window)
+        # Use fixed upsample rate to avoid floating-point drift
         samples_per_frame = self.speech_tokenizer.get_decode_upsample_rate()
-        step_samples = samples_per_frame * emit_every_frames
+        step_samples = samples_per_frame * current_emit_every
         chunk = wav[-step_samples:] if step_samples > 0 else wav
 
-        # Crossfade with previous chunk tail for smooth transition
-        if decoded_tail is not None and overlap_samples > 0:
-            ov = min(overlap_samples, len(decoded_tail), len(chunk))
+        # Always blend boundaries to prevent clicks from sliding window re-decode artifacts
+        blend_samples = overlap_samples
+        if decoded_tail is not None:
+            ov = min(blend_samples, len(decoded_tail), len(chunk))
             if ov > 0:
                 head = _crossfade(decoded_tail[-ov:], chunk[:ov])
                 chunk = np.concatenate([head, chunk[ov:]], axis=0)
 
+        # Apply Hann fade-in to very first chunk to avoid pop at audio start
+        if decoded_tail is None:
+            fade_len = min(blend_samples, len(chunk))
+            if fade_len > 0:
+                t = np.arange(fade_len, dtype=np.float32) / max(fade_len - 1, 1)
+                fade_in = 0.5 * (1 - np.cos(np.pi * t))
+                chunk[:fade_len] *= fade_in
+
+        # Save FULL chunk for next crossfade reference
         decoded_tail = chunk.copy()
-        total_frames_emitted = len(codes_buffer)
+
+        # Trim END of chunk - this region will be replaced by next chunk's crossfade
+        # Don't trim if chunk would become too small
+        if len(chunk) > blend_samples * 2:
+            chunk = chunk[:-blend_samples]
+
+        total_frames_emitted = len(codes_buffer)  # Mark these frames as emitted
         yield chunk, sr
 
     # Flush: decode only remaining frames that haven't been emitted yet
@@ -854,12 +915,20 @@ def _stream_generate_pcm_impl(
             skip_samples = int(skip_frames * samples_per_frame)
             wav = wav[skip_samples:]
 
-        # Crossfade with previous tail
-        if decoded_tail is not None and overlap_samples > 0 and len(wav) > 0:
-            ov = min(overlap_samples, len(decoded_tail), len(wav))
+        # Always blend flush boundary
+        blend_samples = overlap_samples
+        if decoded_tail is not None and len(wav) > 0:
+            ov = min(blend_samples, len(decoded_tail), len(wav))
             if ov > 0:
                 head = _crossfade(decoded_tail[-ov:], wav[:ov])
                 wav = np.concatenate([head, wav[ov:]], axis=0)
+
+        # Apply fade-out at very end of audio to avoid pop on completion
+        if len(wav) > blend_samples:
+            fade_len = min(blend_samples, len(wav))
+            t = np.arange(fade_len, dtype=np.float32) / max(fade_len - 1, 1)
+            fade_out = 0.5 * (1 + np.cos(np.pi * t))  # Hann fade-out
+            wav[-fade_len:] *= fade_out
 
         yield wav, sr
 
@@ -899,4 +968,5 @@ def _enable_streaming_optimizations_impl(
 
 __all__ = [
     'apply_streaming_patch_to_qwen_tts',
+    'DEFAULT_BLEND_SAMPLES',
 ]
