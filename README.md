@@ -44,6 +44,8 @@ PhantomVox 是一个使用 Flet 框架构建的跨平台桌面应用，提供高
 运行环境配置脚本之前，请确保已安装 Python 3.12
 不带_venv后缀的是给整合包使用的脚本
 
+安装SOX：https://sourceforge.net/projects/sox/ 自行下载安装到系统
+
 运行环境配置脚本：
 
 ```batch
