@@ -164,6 +164,7 @@ class ModelManagerView(ft.Container):
             for model_id, model_info, is_installed, is_usable, status_msg in models:
                 # 构建依赖信息
                 dep_info = ""
+                is_required = getattr(model_info, 'required', False)
                 if model_info.dependencies:
                     dep_names = []
                     for dep_id in model_info.dependencies:
@@ -175,7 +176,7 @@ class ModelManagerView(ft.Container):
                     if dep_names:
                         dep_info = f"\n依赖: {', '.join(dep_names)}"
 
-                # 状态标签
+                # 状态标签和必装标识
                 if is_usable:
                     status_text = "可用"
                     status_color = ft.Colors.GREEN
@@ -189,19 +190,39 @@ class ModelManagerView(ft.Container):
                     status_color = ft.Colors.GREY
                     status_bg = ft.Colors.with_opacity(0.1, ft.Colors.GREY)
 
+                # 必装标识
+                required_badge = None
+                if is_required:
+                    required_badge = ft.Container(
+                        content=ft.Text(
+                            "必装",
+                            size=10,
+                            color=ft.Colors.RED,
+                            weight=ft.FontWeight.BOLD
+                        ),
+                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                        bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.RED),
+                        border_radius=8
+                    )
+
                 # 模型卡片 - 构建控件列表
+                # 构建右侧标签行（根据是否必装动态添加）
+                right_badges = [ft.Container(
+                    content=ft.Text(
+                        status_text,
+                        size=11
+                    ),
+                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                    bgcolor=status_bg,
+                    border_radius=12
+                )]
+                if is_required:
+                    right_badges.insert(0, required_badge)
+
                 card_controls = [
                     ft.Row([
                         ft.Text(model_info.name, size=15, weight=ft.FontWeight.BOLD),
-                        ft.Container(
-                            content=ft.Text(
-                                status_text,
-                                size=11
-                            ),
-                            padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                            bgcolor=status_bg,
-                            border_radius=12
-                        )
+                        ft.Row(right_badges, spacing=5)
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.Container(height=3),
                     ft.Text(f"大小: {model_info.size}", size=12),
@@ -229,7 +250,7 @@ class ModelManagerView(ft.Container):
                             style=self.BStyle,
                             on_click=lambda e, mid=model_id: self._on_delete_model_click(e, mid),
                             width=80,
-                            disabled=not is_installed
+                            disabled=not is_installed or is_required  # 必装模型禁用删除按钮
                         ),
                     ], spacing=8)
                 ])
@@ -400,6 +421,20 @@ class ModelManagerView(ft.Container):
         """删除模型按钮点击事件"""
         model_info = self._model_manager.get_model_info(model_id)
         if not model_info:
+            return
+
+        # 检查是否为必装模型
+        is_required = getattr(model_info, 'required', False)
+        if is_required:
+            self._page.show_dialog(
+                ft.AlertDialog(
+                    title=ft.Text("无法删除"),
+                    content=ft.Text(f"\"{model_info.name}\" 是必装模型，不能删除。"),
+                    actions=[
+                        ft.TextButton("确定", on_click=lambda _: self._page.pop_dialog())
+                    ]
+                )
+            )
             return
 
         # 确认对话框

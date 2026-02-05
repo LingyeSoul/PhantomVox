@@ -93,7 +93,7 @@ class PhantomAppBar:
         return ft.AppBar(
             leading_width=40,
             title=ft.WindowDragArea(
-                content=ft.Text(f"PhantomVox v{self.version}"),
+                content=ft.Text(f"PhantomVox V{self.version}"),
                 width=800,
             ),
             center_title=False,

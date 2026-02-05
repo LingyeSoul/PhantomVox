@@ -62,10 +62,7 @@ class PhantomUI:
         # 当前选择的模型（用于初始化 TTS 引擎）
         self._current_model_id = None
 
-        # 初始化时设置默认模型
-        usable_models = self.model_manager.list_usable_models()
-        if usable_models:
-            self._current_model_id = usable_models[0]
+        # 不要在初始化时设置默认模型，让 TTS 引擎根据当前页面自动选择
 
         # 三个新视图（延迟初始化）
         self.custom_voice_view = None
@@ -131,10 +128,25 @@ class PhantomUI:
                         model_id = model_id.value
                     self.terminal.add_log(f"DEBUG: 从 model_dropdown 获取 model_id = {model_id}")
 
-                # 如果仍然没有模型，使用第一个可用模型
+                # 如果仍然没有模型，根据当前页面选择对应类型的模型
                 if not model_id:
-                    usable_models = self.model_manager.list_usable_models()
-                    self.terminal.add_log(f"DEBUG: 可用模型列表 = {usable_models}")
+                    # 根据当前页面确定模型类型
+                    if self._current_view_index == 0:  # Custom Voice
+                        model_type = "customvoice"
+                    elif self._current_view_index == 1:  # Voice Design
+                        model_type = "voicedesign"
+                    elif self._current_view_index == 2:  # Voice Clone
+                        model_type = "base"
+                    else:
+                        model_type = None
+
+                    if model_type:
+                        usable_models = self.model_manager.list_usable_models_by_type(model_type)
+                        self.terminal.add_log(f"DEBUG: 当前页面需要 {model_type} 类型模型")
+                    else:
+                        usable_models = self.model_manager.list_usable_models()
+
+                    self.terminal.add_log(f"DEBUG: 可用模型列表 ({model_type or 'all'}) = {usable_models}")
 
                     if not usable_models:
                         # 没有可用的模型
@@ -268,7 +280,18 @@ class PhantomUI:
 
     def on_navigation_change(self, e):
         """导航切换事件"""
+        old_index = self._current_view_index
         self._current_view_index = e.control.selected_index
+
+        # 如果切换到不同的语音相关页面，清空当前模型ID以重新加载
+        voice_pages = {0, 1, 2}  # Custom Voice, Voice Design, Voice Clone
+        if old_index in voice_pages and self._current_view_index in voice_pages:
+            # 清空模型ID，强制重新加载合适的模型
+            self._current_model_id = None
+            # 清除缓存的引擎
+            if self._tts_engine is not None:
+                self.terminal.add_log("切换页面，重新加载模型...")
+                self._clear_tts_engine_cache(None)
 
         # 更新内容区域
         self._update_content_area()
@@ -309,6 +332,14 @@ class PhantomUI:
             self.content_area.controls.append(view)
 
         self.content_area.update()
+
+        # 在页面更新后刷新模型下拉框（需要在控件添加到页面后）
+        if self._current_view_index == 0:
+            self.custom_voice_view.refresh_model_dropdown()
+        elif self._current_view_index == 1:
+            self.voice_design_view.refresh_model_dropdown()
+        elif self._current_view_index == 2:
+            self.voice_clone_view.refresh_model_dropdown()
 
     def _get_custom_voice_view(self) -> ft.Control:
         """获取自定义语音视图（延迟初始化）"""

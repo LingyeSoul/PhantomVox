@@ -236,11 +236,20 @@ async def synthesize_speech_streaming(
                         )
 
                     # 使用克隆音色进行流式合成
-                    result_gen = engine.voice_clone_synthesize_streaming_async(
-                        text=request.text,
-                        ref_audio=clone["ref_audio"],
-                        ref_text=clone["ref_text"]
-                    )
+                    # 优先使用预计算的特征（如果存在）
+                    if "prompt_features" in clone and clone["prompt_features"]:
+                        # 使用预计算特征（快速）
+                        result_gen = engine.voice_clone_synthesize_streaming_async(
+                            text=request.text,
+                            voice_clone_prompt=clone["prompt_features"]
+                        )
+                    else:
+                        # 降级：重新计算特征
+                        result_gen = engine.voice_clone_synthesize_streaming_async(
+                            text=request.text,
+                            ref_audio=clone["ref_audio"],
+                            ref_text=clone["ref_text"]
+                        )
 
                 else:
                     stats.record_request(success=False)

@@ -492,8 +492,78 @@ class VoiceCloneView(ft.Container):
                 ))
                 return
 
-            ref_audio = clone["ref_audio"]
-            ref_text = clone["ref_text"]
+            # 获取TTS引擎（需要在克隆分支中单独获取）
+            tts_engine = self.tts_engine_getter()
+
+            # 检查是否有预计算的特征
+            if "prompt_features" in clone and clone["prompt_features"]:
+                # 使用预计算的特征（快速）
+                self.terminal.add_log(f"使用预计算特征: {clone['name']}")
+
+                # 使用预计算特征生成语音（不需要 ref_audio 和 ref_text）
+                audio, sr = await tts_engine.voice_clone_synthesize_async(
+                    text=text,
+                    clone_prompt=clone["prompt_features"],
+                    timeout=300.0
+                )
+
+                # 保存结果并返回
+                self._last_audio = (audio, sr)
+
+                if self._temp_audio_file:
+                    self._audio_temp_manager.cleanup_file(self._temp_audio_file)
+
+                self._temp_audio_file = self._audio_temp_manager.save_audio(audio, sr, prefix="clone")
+
+                self.terminal.add_log("✓ 语音生成成功（使用缓存特征）")
+
+                # 更新音频控制状态并播放
+                self.audio_control.update_audio_state(True)
+                await self._on_play(None)
+
+                self._is_generating = False
+                return
+            else:
+                # 首次使用或特征丢失，需要重新计算
+                self.terminal.add_log(f"首次使用克隆 '{clone['name']}'，正在提取特征...")
+
+                ref_audio = clone["ref_audio"]
+                ref_text = clone["ref_text"]
+
+                # 提取特征
+                prompt_features = await tts_engine.create_voice_clone_prompt_async(
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    x_vector_only=False
+                )
+
+                # 保存特征以备下次使用
+                self.voice_library.update_clone_features(clone_id, prompt_features)
+                self.terminal.add_log(f"✓ 特征已保存，下次可直接使用")
+
+                # 使用特征生成语音（不需要 ref_audio 和 ref_text）
+                audio, sr = await tts_engine.voice_clone_synthesize_async(
+                    text=text,
+                    clone_prompt=prompt_features,
+                    timeout=300.0
+                )
+
+                # 保存结果并返回
+                self._last_audio = (audio, sr)
+
+                if self._temp_audio_file:
+                    self._audio_temp_manager.cleanup_file(self._temp_audio_file)
+
+                self._temp_audio_file = self._audio_temp_manager.save_audio(audio, sr, prefix="clone")
+
+                self.terminal.add_log("✓ 语音生成成功")
+
+                # 更新音频控制状态并播放
+                self.audio_control.update_audio_state(True)
+                await self._on_play(None)
+
+                self._is_generating = False
+                return
         else:
             # 使用新音频
             if not self._ref_audio_path:
@@ -569,11 +639,23 @@ class VoiceCloneView(ft.Container):
                     self.terminal.add_log(f"ℹ 该克隆已存在，跳过保存")
                     logger.info(f"克隆已存在，跳过保存: ref_audio={ref_audio}, ref_text={ref_text}")
                 else:
-                    # 创建新克隆
+                    # 创建新克隆（包含特征计算）
+                    self.terminal.add_log("正在提取声音特征并保存克隆...")
+
+                    # 计算特征
+                    prompt_features = await tts_engine.create_voice_clone_prompt_async(
+                        ref_audio=ref_audio,
+                        ref_text=ref_text,
+                        x_vector_only=x_vector_only
+                    )
+
+                    # 保存克隆（包含特征）
                     clone_id = self.voice_library.add_clone(
                         name=clone_name,
                         ref_audio=ref_audio,
-                        ref_text=ref_text
+                        ref_text=ref_text,
+                        prompt_features=prompt_features,  # 保存特征
+                        x_vector_only=x_vector_only
                     )
 
                     if clone_id:
@@ -585,7 +667,7 @@ class VoiceCloneView(ft.Container):
                             ft.Text(f"已保存克隆: {clone_name}"),
                             bgcolor=ft.Colors.GREEN
                         ))
-                        self.terminal.add_log(f"已保存克隆: {clone_name} ({clone_id})")
+                        self.terminal.add_log(f"✓ 已保存克隆: {clone_name} ({clone_id})")
                         self._refresh_clone_library()
 
             # 更新音频控制状态

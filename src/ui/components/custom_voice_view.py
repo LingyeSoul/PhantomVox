@@ -115,6 +115,13 @@ class CustomVoiceView(ft.Container):
             text_style=ft.TextStyle(font_family="Microsoft YaHei")
         )
 
+        # 收藏按钮
+        self.favorite_button = ft.IconButton(
+            icon=ft.Icons.FAVORITE_BORDER,
+            tooltip="收藏当前情感指令",
+            on_click=self._on_toggle_favorite
+        )
+
         # 常用预设按钮
         emotion_buttons = []
         for emotion, instruct in EMOTION_PRESETS.items():
@@ -177,7 +184,9 @@ class CustomVoiceView(ft.Container):
                                 ft.Icons.INFO_OUTLINE,
                                 size=16,
                                 tooltip="可选填，描述情感和语气"
-                            )
+                            ),
+                            ft.Container(expand=True),
+                            self.favorite_button
                         ]),
                         self.instruct_input,
                         ft.Text("常用预设:", size=12),
@@ -293,10 +302,6 @@ class CustomVoiceView(ft.Container):
         self.instruct_input.value = instruct
         self.instruct_input.update()
 
-        # 保存到最近使用
-        if instruct:
-            self.voice_library.add_recent_instruct(instruct)
-
     def _on_clear_text(self, e):
         """清空文本"""
         self.text_panel.clear()
@@ -333,10 +338,6 @@ class CustomVoiceView(ft.Container):
             # 保存配置
             self.config_manager.set("custom_voice.default_speaker", speaker)
             self.config_manager.set("custom_voice.default_language", language)
-
-            # 保存情感指令到最近使用
-            if instruct:
-                self.voice_library.add_recent_instruct(instruct)
 
             # 获取TTS引擎
             tts_engine = self.tts_engine_getter()
@@ -480,3 +481,51 @@ class CustomVoiceView(ft.Container):
                 ft.Text(f"保存失败: {str(e)}"),
                 bgcolor=ft.Colors.RED
             ))
+
+    def _on_toggle_favorite(self, e):
+        """切换收藏按钮点击事件"""
+        instruct = self.instruct_input.value or ""
+        if not instruct.strip():
+            self._page.show_dialog(ft.SnackBar(
+                ft.Text("请先输入情感指令"),
+                bgcolor=ft.Colors.ORANGE
+            ))
+            return
+
+        instruct = instruct.strip()
+
+        # 检查是否已收藏
+        if self.voice_library.is_favorite_instruct(instruct):
+            # 取消收藏
+            self.voice_library.remove_favorite_instruct(instruct)
+            self.favorite_button.icon = ft.Icons.FAVORITE_BORDER
+            self.favorite_button.tooltip = "收藏当前情感指令"
+            self.favorite_button.update()
+            self._page.show_dialog(ft.SnackBar(
+                ft.Text("已取消收藏"),
+                bgcolor=ft.Colors.GREY
+            ))
+        else:
+            # 添加收藏
+            self.voice_library.add_favorite_instruct(instruct)
+            self.favorite_button.icon = ft.Icons.FAVORITE
+            self.favorite_button.tooltip = "取消收藏"
+            self.favorite_button.update()
+            self._page.show_dialog(ft.SnackBar(
+                ft.Text("已添加到收藏"),
+                bgcolor=ft.Colors.GREEN
+            ))
+
+    def _refresh_favorite_button(self):
+        """刷新收藏按钮状态（当指令输入框内容变化时调用）"""
+        instruct = self.instruct_input.value or ""
+        if instruct.strip() and self.voice_library.is_favorite_instruct(instruct.strip()):
+            self.favorite_button.icon = ft.Icons.FAVORITE
+            self.favorite_button.tooltip = "取消收藏"
+        else:
+            self.favorite_button.icon = ft.Icons.FAVORITE_BORDER
+            self.favorite_button.tooltip = "收藏当前情感指令"
+        try:
+            self.favorite_button.update()
+        except:
+            pass

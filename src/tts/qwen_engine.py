@@ -10,11 +10,12 @@ Qwen3-TTS 引擎封装（重构版）
 """
 
 from qwen_tts import Qwen3TTSModel
+from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
 import logging
 import os
 import numpy as np
 import asyncio
-from typing import Tuple, Optional, AsyncGenerator, Dict, Any, Generator
+from typing import Tuple, Optional, AsyncGenerator, Dict, Any, Generator, List
 import torch
 
 from .exceptions import (
@@ -546,31 +547,170 @@ class QwenEngine:
 
     # ========== Voice Clone 模式 ==========
 
+    def _convert_prompt_to_prompt_items(self, clone_prompt) -> List[VoiceClonePromptItem]:
+        """
+        将各种格式的 clone_prompt 转换为 VoiceClonePromptItem 对象列表
+
+        Args:
+            clone_prompt: 可以是以下格式之一:
+                - VoiceClonePromptItem 对象
+                - List[VoiceClonePromptItem]
+                - dict (从 load_prompt_features 加载的格式)
+
+        Returns:
+            List[VoiceClonePromptItem]: 模型期望的对象列表
+        """
+        # 如果已经是列表，验证格式
+        if isinstance(clone_prompt, list):
+            if len(clone_prompt) == 0:
+                raise TTSInvalidParameterError("clone_prompt 列表为空")
+            if isinstance(clone_prompt[0], VoiceClonePromptItem):
+                return clone_prompt
+            else:
+                # 列表中的元素不是 VoiceClonePromptItem，尝试转换
+                raise TTSInvalidParameterError(
+                    "clone_prompt 列表中的元素必须是 VoiceClonePromptItem 对象"
+                )
+
+        # 如果是单个 VoiceClonePromptItem 对象，包装成列表
+        if isinstance(clone_prompt, VoiceClonePromptItem):
+            return [clone_prompt]
+
+        # 如果是字典（从 load_prompt_features 加载的格式）
+        if isinstance(clone_prompt, dict):
+            try:
+                # 提取列表格式的数据
+                ref_code_list = clone_prompt.get("ref_code")  # 可能是 None 或 [tensor]
+                ref_spk_embedding_list = clone_prompt["ref_spk_embedding"]  # [tensor]
+                x_vector_only_mode_list = clone_prompt["x_vector_only_mode"]  # [bool]
+                icl_mode_list = clone_prompt["icl_mode"]  # [bool]
+                ref_text_list = clone_prompt.get("ref_text")  # 可能是 None 或 [str]
+
+                # 确保所有字段都是列表且长度一致
+                n = len(ref_spk_embedding_list)
+
+                # 构建 VoiceClonePromptItem 列表
+                prompt_items = []
+                for i in range(n):
+                    ref_code = ref_code_list[i] if ref_code_list is not None else None
+                    ref_spk_embedding = ref_spk_embedding_list[i]
+                    x_vector_only_mode = x_vector_only_mode_list[i]
+                    icl_mode = icl_mode_list[i]
+                    ref_text = ref_text_list[i] if ref_text_list is not None else None
+
+                    # 确保张量在正确的设备上
+                    if hasattr(ref_spk_embedding, 'to'):
+                        ref_spk_embedding = ref_spk_embedding.to(self.device)
+                    if ref_code is not None and hasattr(ref_code, 'to'):
+                        ref_code = ref_code.to(self.device)
+
+                    prompt_items.append(VoiceClonePromptItem(
+                        ref_code=ref_code,
+                        ref_spk_embedding=ref_spk_embedding,
+                        x_vector_only_mode=x_vector_only_mode,
+                        icl_mode=icl_mode,
+                        ref_text=ref_text
+                    ))
+
+                logger.info(f"✓ 已转换 {len(prompt_items)} 个 VoiceClonePromptItem 对象")
+                return prompt_items
+
+            except (KeyError, IndexError, TypeError) as e:
+                logger.error(f"转换 clone_prompt 字典失败: {e}")
+                raise TTSInvalidParameterError(
+                    f"clone_prompt 字典格式无效: {e}"
+                )
+
+        # 不支持的格式
+        logger.error(f"不支持的 clone_prompt 类型: {type(clone_prompt)}")
+        raise TTSInvalidParameterError(
+            "clone_prompt 必须是 VoiceClonePromptItem、List[VoiceClonePromptItem] 或 dict"
+        )
+        """
+        将 VoiceClonePromptItem 对象转换为字典格式
+
+        模型期望这些字段是列表格式（支持多个 prompt items）
+        """
+        # 如果已经是字典，确保格式正确
+        if isinstance(clone_prompt, dict):
+            # 检查是否已经是列表格式
+            if isinstance(clone_prompt.get("x_vector_only_mode"), (list, tuple)):
+                return clone_prompt
+            # 如果是单个值，转换为列表格式
+            return {
+                "ref_code": [clone_prompt["ref_code"]] if clone_prompt["ref_code"] is not None else None,
+                "ref_spk_embedding": [clone_prompt["ref_spk_embedding"]],
+                "x_vector_only_mode": [clone_prompt["x_vector_only_mode"]],
+                "icl_mode": [clone_prompt["icl_mode"]],
+                "ref_text": [clone_prompt["ref_text"]] if clone_prompt.get("ref_text") else None
+            }
+
+        # 如果是 VoiceClonePromptItem 对象，转换为字典
+        try:
+            return {
+                "ref_code": [clone_prompt.ref_code] if clone_prompt.ref_code is not None else None,
+                "ref_spk_embedding": [clone_prompt.ref_spk_embedding],
+                "x_vector_only_mode": [clone_prompt.x_vector_only_mode],
+                "icl_mode": [clone_prompt.icl_mode],
+                "ref_text": [clone_prompt.ref_text] if clone_prompt.ref_text else None
+            }
+        except AttributeError as e:
+            logger.error(f"转换 clone_prompt 失败: {e}")
+            raise TTSInvalidParameterError(
+                "clone_prompt 格式无效，需要 VoiceClonePromptItem 对象或字典"
+            )
+
     def voice_clone_synthesize(
         self,
         text: str,
-        ref_audio: str,
-        ref_text: str,
+        ref_audio: Optional[str] = None,
+        ref_text: Optional[str] = None,
         clone_prompt=None,
         x_vector_only: bool = False,
         **kwargs
     ) -> Tuple[np.ndarray, int]:
-        """Voice Clone 同步生成"""
+        """Voice Clone 同步生成
+
+        Args:
+            text: 要合成的文本
+            ref_audio: 参考音频路径（使用 clone_prompt 时可选）
+            ref_text: 参考文本（使用 clone_prompt 时可选）
+            clone_prompt: 预计算的 prompt 特征（可选）
+            x_vector_only: 是否仅使用 x_vector 模式
+            **kwargs: 其他生成参数
+
+        Returns:
+            Tuple[np.ndarray, int]: (音频数据, 采样率)
+        """
         if not self.model:
             raise TTSModelNotLoadedError("模型未加载")
 
         if not text or not text.strip():
             raise TTSInvalidParameterError("输入文本不能为空")
 
+        # 验证参数：如果不使用 clone_prompt，必须提供 ref_audio 和 ref_text
+        if not clone_prompt and (not ref_audio or not ref_text):
+            raise TTSInvalidParameterError(
+                "不使用 clone_prompt 时，必须提供 ref_audio 和 ref_text"
+            )
+
         try:
             logger.info(f"正在生成语音 (Voice Clone): {text[:50]}...")
 
             if clone_prompt:
+                # 转换为 VoiceClonePromptItem 对象列表（模型期望的格式）
+                prompt_items = self._convert_prompt_to_prompt_items(clone_prompt)
+
+                # 使用 voice_clone_prompt 时，不需要 ref_audio, ref_text 等参数
+                # 过滤掉不应该传递给模型的参数
+                excluded_params = ['timeout', 'ref_audio', 'ref_text', 'x_vector_only_mode', 'x_vector_only']
+                model_kwargs = {k: v for k, v in kwargs.items() if k not in excluded_params}
+
                 wavs, sr = self.model.generate_voice_clone(
                     text=text,
                     language="Auto",
-                    voice_clone_prompt=clone_prompt,
-                    **kwargs
+                    voice_clone_prompt=prompt_items,  # ← 传递列表而不是字典
+                    **model_kwargs
                 )
             else:
                 wavs, sr = self.model.generate_voice_clone(
@@ -592,8 +732,8 @@ class QwenEngine:
     async def voice_clone_synthesize_async(
         self,
         text: str,
-        ref_audio: str,
-        ref_text: str,
+        ref_audio: Optional[str] = None,
+        ref_text: Optional[str] = None,
         clone_prompt=None,
         x_vector_only: bool = False,
         **kwargs
@@ -615,8 +755,8 @@ class QwenEngine:
     async def voice_clone_synthesize_streaming_async(
         self,
         text: str,
-        ref_audio: str,
-        ref_text: str,
+        ref_audio: Optional[str] = None,
+        ref_text: Optional[str] = None,
         clone_prompt=None,
         x_vector_only: bool = False,
         emit_every_frames: int = 8,
@@ -638,6 +778,12 @@ class QwenEngine:
         if not text or not text.strip():
             raise TTSInvalidParameterError("输入文本不能为空")
 
+        # 验证参数：如果不使用 clone_prompt，必须提供 ref_audio 和 ref_text
+        if not clone_prompt and (not ref_audio or not ref_text):
+            raise TTSInvalidParameterError(
+                "不使用 clone_prompt 时，必须提供 ref_audio 和 ref_text"
+            )
+
         logger.info(f"[Streaming] 正在流式生成语音 (Voice Clone): {text[:50]}...")
 
         # 创建或使用已有的 voice_clone_prompt
@@ -648,6 +794,9 @@ class QwenEngine:
                 x_vector_only_mode=x_vector_only
             )
 
+        # 转换为 VoiceClonePromptItem 对象列表（确保格式正确）
+        prompt_items = self._convert_prompt_to_prompt_items(clone_prompt)
+
         # 准备 tokens - 使用正确的方法
         assistant_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
         input = self.model.processor(text=assistant_text, return_tensors="pt", padding=True)
@@ -655,9 +804,13 @@ class QwenEngine:
         if input_ids[0].dim() == 1:
             input_ids[0] = input_ids[0].unsqueeze(0)
 
+        # 使用模型方法转换为 dict 格式（包含所有必要信息）
+        prompt_dict = self.model._prompt_items_to_voice_clone_prompt(prompt_items)
+
+        # 构建 ref_ids（从 prompt_items 中提取 ref_text）
         ref_ids = None
-        if ref_text and not x_vector_only:
-            ref_text_formatted = f"<|im_start|>assistant\n{ref_text}<|im_end|>\n"
+        if prompt_items[0].ref_text and not prompt_items[0].x_vector_only_mode:
+            ref_text_formatted = f"<|im_start|>assistant\n{prompt_items[0].ref_text}<|im_end|>\n"
             ref_input = self.model.processor(text=ref_text_formatted, return_tensors="pt", padding=True)
             ref_id = ref_input["input_ids"].to(self.model.device)
             if ref_id.dim() == 1:
@@ -666,16 +819,6 @@ class QwenEngine:
 
         def stream_generator() -> Generator[Tuple[np.ndarray, int], None, None]:
             """同步生成器"""
-            # 转换 prompt 格式
-            if not isinstance(clone_prompt, dict):
-                # 如果是 VoiceClonePromptItem 或列表，转换为字典格式
-                if isinstance(clone_prompt, list):
-                    prompt_dict = self.model._prompt_items_to_voice_clone_prompt(clone_prompt)
-                else:
-                    prompt_dict = self.model._prompt_items_to_voice_clone_prompt([clone_prompt])
-            else:
-                prompt_dict = clone_prompt
-
             for chunk, sr in self.model.model.stream_generate_pcm(
                 input_ids=input_ids,
                 ref_ids=ref_ids,
@@ -747,6 +890,48 @@ class QwenEngine:
             ref_text=ref_text,
             x_vector_only=x_vector_only
         )
+
+    def create_and_save_prompt_features(
+        self,
+        ref_audio: str,
+        ref_text: str,
+        save_path: str,
+        x_vector_only: bool = False
+    ) -> bool:
+        """
+        创建并保存 prompt 特征到文件
+
+        Args:
+            ref_audio: 参考音频路径
+            ref_text: 参考文本
+            save_path: 保存路径（.pt 文件）
+            x_vector_only: 是否仅使用 x_vector
+
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            # 创建特征
+            prompt_item = self.create_voice_clone_prompt(
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                x_vector_only=x_vector_only
+            )
+
+            # 保存特征
+            from tts.prompt_serializer import save_prompt_features
+
+            metadata = {
+                "ref_audio": ref_audio,
+                "ref_text": ref_text,
+                "x_vector_only": x_vector_only
+            }
+
+            return save_prompt_features(prompt_item, save_path, metadata)
+
+        except Exception as e:
+            logger.error(f"创建并保存特征失败: {e}")
+            return False
 
     # ========== 辅助方法 ==========
 

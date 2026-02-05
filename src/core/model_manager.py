@@ -60,7 +60,8 @@ class ModelManager:
             name="Qwen3-TTS 1.7B 自定义声音",
             size="~3.4GB",
             repo_id="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-            description="1.7B 参数模型，支持自定义声音克隆"
+            description="1.7B 参数模型，支持自定义声音克隆",
+            dependencies=["tokenizer-12hz"]
         ),
 
         "1.7b-voicedesign": ModelInfo(
@@ -68,7 +69,8 @@ class ModelManager:
             name="Qwen3-TTS 1.7B 声音设计",
             size="~3.4GB",
             repo_id="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-            description="1.7B 参数模型，高级声音设计功能"
+            description="1.7B 参数模型，高级声音设计功能",
+            dependencies=["tokenizer-12hz"]
         ),
 
         "1.7b-base": ModelInfo(
@@ -86,7 +88,8 @@ class ModelManager:
             name="Qwen3-TTS 0.6B 自定义声音",
             size="~1.2GB",
             repo_id="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-            description="0.6B 参数模型，轻量级自定义声音"
+            description="0.6B 参数模型，轻量级自定义声音",
+            dependencies=["tokenizer-12hz"]
         ),
 
         "0.6b-base": ModelInfo(

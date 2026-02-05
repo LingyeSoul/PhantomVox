@@ -1,0 +1,377 @@
+"""
+Vocal 数据文件系统管理器
+
+负责管理 vocal/ 文件夹中的所有语音数据
+"""
+
+import json
+import logging
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+
+class VocalDataManager:
+    """语音数据文件系统管理器"""
+
+    def __init__(self, vocal_root: str):
+        """
+        初始化 Vocal 数据管理器
+
+        Args:
+            vocal_root: vocal 文件夹的根路径
+        """
+        self.vocal_root = Path(vocal_root)
+        self.clones_dir = self.vocal_root / "clones"
+        self.designs_dir = self.vocal_root / "designs"
+        self.presets_dir = self.vocal_root / "presets"
+        self.instructs_dir = self.vocal_root / "instructs"
+
+        # 初始化目录结构
+        self._init_directories()
+
+    def _init_directories(self):
+        """初始化目录结构"""
+        for dir_path in [self.clones_dir, self.designs_dir, self.presets_dir, self.instructs_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+
+    # ========== 克隆管理 ==========
+
+    def save_clone_data(
+        self,
+        clone_id: str,
+        name: str,
+        ref_audio_path: str,
+        ref_text: str,
+        prompt_features: Optional[Any] = None,
+        x_vector_only: bool = False,
+        original_ref_audio: Optional[str] = None
+    ) -> bool:
+        """
+        保存完整的克隆数据
+
+        Args:
+            clone_id: 克隆ID
+            name: 克隆名称
+            ref_audio_path: 参考音频路径
+            ref_text: 参考文本
+            prompt_features: 预计算的特征（可选）
+            x_vector_only: 是否仅使用 x_vector
+            original_ref_audio: 原始参考音频路径（用于记录）
+
+        Returns:
+            bool: 是否成功
+        """
+        clone_dir = self.clones_dir / clone_id
+        clone_dir.mkdir(exist_ok=True)
+
+        try:
+            # 1. 保存元数据
+            metadata = {
+                "id": clone_id,
+                "name": name,
+                "created_at": datetime.now().isoformat(),
+                "x_vector_only": x_vector_only,
+                "has_prompt_features": prompt_features is not None,
+                "features_version": "1.0" if prompt_features else None,
+                "original_ref_audio": original_ref_audio or ref_audio_path
+            }
+
+            with open(clone_dir / "metadata.json", "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            # 2. 复制/转换参考音频
+            if os.path.exists(ref_audio_path):
+                target_audio = clone_dir / "ref_audio.wav"
+                if not ref_audio_path.lower().endswith('.wav'):
+                    self._convert_to_wav(ref_audio_path, target_audio)
+                else:
+                    shutil.copy2(ref_audio_path, target_audio)
+            else:
+                logger.warning(f"参考音频文件不存在: {ref_audio_path}")
+                return False
+
+            # 3. 保存参考文本
+            with open(clone_dir / "ref_text.txt", "w", encoding="utf-8") as f:
+                f.write(ref_text)
+
+            # 4. 保存特征数据（如果有）
+            if prompt_features:
+                from tts.prompt_serializer import save_prompt_features
+                save_prompt_features(
+                    prompt_features,
+                    str(clone_dir / "prompt_features.pt")
+                )
+
+            # 5. 更新索引
+            self._update_clone_index(clone_id, metadata)
+
+            logger.info(f"✓ 克隆数据已保存: {name} ({clone_id})")
+            return True
+
+        except Exception as e:
+            logger.error(f"✗ 保存克隆数据失败: {e}")
+            # 清理失败的目录
+            if clone_dir.exists():
+                shutil.rmtree(clone_dir)
+            return False
+
+    def load_clone_data(self, clone_id: str) -> Optional[dict]:
+        """
+        加载克隆数据
+
+        Args:
+            clone_id: 克隆ID
+
+        Returns:
+            dict: 包含 metadata, ref_audio, ref_text, prompt_features 的字典
+        """
+        clone_dir = self.clones_dir / clone_id
+
+        if not clone_dir.exists():
+            return None
+
+        try:
+            # 加载元数据
+            with open(clone_dir / "metadata.json", "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            # 加载参考文本
+            with open(clone_dir / "ref_text.txt", "r", encoding="utf-8") as f:
+                ref_text = f.read().strip()
+
+            # 检查音频文件
+            ref_audio = str(clone_dir / "ref_audio.wav")
+            if not os.path.exists(ref_audio):
+                logger.warning(f"克隆 {clone_id} 的音频文件丢失")
+                return None
+
+            # 尝试加载特征数据（可选）
+            prompt_features = None
+            features_file = clone_dir / "prompt_features.pt"
+            if features_file.exists():
+                try:
+                    from tts.prompt_serializer import load_prompt_features
+                    prompt_features = load_prompt_features(str(features_file))
+                except Exception as e:
+                    logger.warning(f"加载特征数据失败: {e}")
+
+            return {
+                "metadata": metadata,
+                "ref_audio": ref_audio,
+                "ref_text": ref_text,
+                "prompt_features": prompt_features
+            }
+
+        except Exception as e:
+            logger.error(f"加载克隆数据失败: {e}")
+            return None
+
+    def delete_clone_data(self, clone_id: str) -> bool:
+        """
+        删除克隆数据
+
+        Args:
+            clone_id: 克隆ID
+
+        Returns:
+            bool: 是否成功
+        """
+        clone_dir = self.clones_dir / clone_id
+
+        if clone_dir.exists():
+            try:
+                shutil.rmtree(clone_dir)
+                self._remove_from_clone_index(clone_id)
+                logger.info(f"✓ 克隆数据已删除: {clone_id}")
+                return True
+            except Exception as e:
+                logger.error(f"删除克隆数据失败: {e}")
+                return False
+        return False
+
+    def _convert_to_wav(self, source_path: str, target_path: Path):
+        """
+        转换音频为 WAV 格式
+
+        Args:
+            source_path: 源音频路径
+            target_path: 目标 WAV 路径
+        """
+        try:
+            # 尝试使用 librosa
+            import librosa
+            import soundfile as sf
+
+            audio, sr = librosa.load(source_path, sr=None)
+            sf.write(target_path, audio, sr)
+        except ImportError:
+            # 如果没有 librosa，使用 pydub
+            try:
+                from pydub import AudioSegment
+
+                audio = AudioSegment.from_file(source_path)
+                audio.export(str(target_path), format="wav")
+            except ImportError:
+                # 如果都没有，直接复制（假设已经是支持的格式）
+                shutil.copy2(source_path, target_path)
+
+    def _update_clone_index(self, clone_id: str, metadata: dict):
+        """
+        更新克隆索引
+
+        Args:
+            clone_id: 克隆ID
+            metadata: 元数据字典
+        """
+        index_file = self.clones_dir / ".index.json"
+
+        index = {}
+        if index_file.exists():
+            with open(index_file, "r", encoding="utf-8") as f:
+                index = json.load(f)
+
+        index[clone_id] = {
+            "name": metadata["name"],
+            "created_at": metadata["created_at"],
+            "has_prompt_features": metadata["has_prompt_features"]
+        }
+
+        with open(index_file, "w", encoding="utf-8") as f:
+            json.dump(index, f, indent=2, ensure_ascii=False)
+
+    def _remove_from_clone_index(self, clone_id: str):
+        """
+        从索引中移除克隆
+
+        Args:
+            clone_id: 克隆ID
+        """
+        index_file = self.clones_dir / ".index.json"
+
+        if index_file.exists():
+            with open(index_file, "r", encoding="utf-8") as f:
+                index = json.load(f)
+
+            if clone_id in index:
+                del index[clone_id]
+
+                with open(index_file, "w", encoding="utf-8") as f:
+                    json.dump(index, f, indent=2, ensure_ascii=False)
+
+    def get_clone_index(self) -> Dict[str, dict]:
+        """
+        获取克隆索引
+
+        Returns:
+            dict: 克隆索引字典
+        """
+        index_file = self.clones_dir / ".index.json"
+
+        if index_file.exists():
+            with open(index_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
+    # ========== 设计历史管理 ==========
+
+    # ========== 设计预设管理 ==========
+
+    def save_design_presets(self, presets: Dict[str, str]) -> bool:
+        """
+        保存设计预设
+
+        Args:
+            presets: 预设字典 {name: description}
+
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            with open(self.presets_dir / "design_presets.json", "w", encoding="utf-8") as f:
+                json.dump(presets, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            logger.error(f"保存设计预设失败: {e}")
+            return False
+
+    def load_design_presets(self) -> Dict[str, str]:
+        """
+        加载设计预设（自动迁移旧数据）
+
+        Returns:
+            dict: 预设字典
+        """
+        # 尝试从 vocal/presets 加载
+        file_path = self.presets_dir / "design_presets.json"
+
+        if file_path.exists():
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"加载设计预设失败: {e}")
+
+        return {}
+
+    # ========== 情感指令收藏管理 ==========
+
+    def save_favorite_instructs(self, instructs: List[str]) -> bool:
+        """
+        保存收藏的情感指令
+
+        Args:
+            instructs: 指令列表
+
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            with open(self.instructs_dir / "favorite_instructs.json", "w", encoding="utf-8") as f:
+                json.dump(instructs, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            logger.error(f"保存收藏情感指令失败: {e}")
+            return False
+
+    def load_favorite_instructs(self) -> List[str]:
+        """
+        加载收藏的情感指令（自动迁移旧数据）
+
+        Returns:
+            list: 指令列表
+        """
+        file_path = self.instructs_dir / "favorite_instructs.json"
+
+        # 如果新文件存在，直接加载
+        if file_path.exists():
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"加载收藏情感指令失败: {e}")
+
+        # 检查是否有旧文件需要迁移
+        old_file_path = self.instructs_dir / "recent_instructs.json"
+        if old_file_path.exists():
+            try:
+                logger.info("检测到旧的情感指令文件，开始迁移...")
+                with open(old_file_path, "r", encoding="utf-8") as f:
+                    old_instructs = json.load(f)
+
+                # 保存到新文件
+                if self.save_favorite_instructs(old_instructs):
+                    logger.info(f"✓ 已迁移 {len(old_instructs)} 条情感指令到 favorite_instructs.json")
+                    # 备份旧文件（重命名为 .bak）
+                    backup_path = self.instructs_dir / "recent_instructs.json.bak"
+                    old_file_path.rename(backup_path)
+                    logger.info(f"✓ 旧文件已备份为: {backup_path.name}")
+                    return old_instructs
+            except Exception as e:
+                logger.error(f"迁移情感指令失败: {e}")
+
+        return []

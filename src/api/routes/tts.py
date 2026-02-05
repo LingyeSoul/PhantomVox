@@ -131,11 +131,23 @@ async def synthesize_speech(
                 )
 
             # 使用克隆音色进行合成
-            audio_data, sample_rate = await engine.voice_clone_synthesize_async(
-                text=request.text,
-                ref_audio=clone["ref_audio"],
-                ref_text=clone["ref_text"]
-            )
+            # 优先使用预计算的特征（如果存在）
+            if "prompt_features" in clone and clone["prompt_features"]:
+                # 使用预计算特征（快速）
+                # 注意：ref_audio 和 ref_text 是必需参数，即使使用 clone_prompt
+                audio_data, sample_rate = await engine.voice_clone_synthesize_async(
+                    text=request.text,
+                    ref_audio=clone["ref_audio"],  # 必需参数，会被忽略
+                    ref_text=clone["ref_text"],      # 必需参数，会被忽略
+                    clone_prompt=clone["prompt_features"]
+                )
+            else:
+                # 降级：重新计算特征
+                audio_data, sample_rate = await engine.voice_clone_synthesize_async(
+                    text=request.text,
+                    ref_audio=clone["ref_audio"],
+                    ref_text=clone["ref_text"]
+                )
 
         else:
             stats.record_request(success=False)
