@@ -7,6 +7,9 @@ flet==0.80.5
 qwen-tts>=0.0.5
 modelscope>=1.34.0
 
+# Torch compilation dependencies (Windows only for torch.compile)
+triton-windows<3.6; sys_platform == 'win32' and platform_machine == 'AMD64'
+
 # Audio processing
 sounddevice>=0.5.5
 soundfile>=0.12.0

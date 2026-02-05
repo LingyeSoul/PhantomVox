@@ -336,9 +336,9 @@ class TTSServiceView(ft.Container):
                 ft.Row([
                     ft.Text("端口:", size=14),
                     self.port_input,
-                    ft.VerticalDivider(width=20, color=ft.Colors.TRANSPARENT),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+                ft.Row([
                     self.start_button,
-                    ft.VerticalDivider(width=10, color=ft.Colors.TRANSPARENT),
                     self.stop_button,
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
             ], spacing=5),

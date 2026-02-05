@@ -191,7 +191,9 @@ class PhantomUI:
                     device=device,
                     dtype=dtype,
                     attn_implementation=attn_implementation,
-                    shared_tokenizer_path=shared_tokenizer_path
+                    shared_tokenizer_path=shared_tokenizer_path,
+                    enable_streaming=True,  # 显式启用流式输出
+                    streaming_decode_window=80  # 流式解码窗口大小
                 )
 
                 self.terminal.add_log("✓ TTS 引擎初始化完成")

@@ -121,7 +121,7 @@ class OpenAITTSRequest(BaseModel):
     input: str = Field(..., min_length=1, description="要转换的文本")
     voice: str = Field(default="alloy", description="说话人")
     response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field(
-        default="mp3",
+        default="pcm",  # 改为默认使用 PCM，更适合流式播放
         description="音频格式"
     )
     speed: float = Field(default=1.0, ge=0.25, le=4.0, description="语速")

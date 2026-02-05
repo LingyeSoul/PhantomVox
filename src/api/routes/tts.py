@@ -42,9 +42,7 @@ async def synthesize_speech(
         "mode": "custom_voice",
         "speaker": "Vivian",
         "language": "Chinese",
-        "instruct": "温柔的声音",
-        "speed_factor": 1.0,
-        "pitch_factor": 1.0
+        "instruct": "温柔的声音"
     }
     ```
 
@@ -87,18 +85,14 @@ async def synthesize_speech(
                 text=request.text,
                 speaker=request.speaker,
                 language=request.language,
-                instruct=request.instruct,
-                speed_factor=request.speed_factor,
-                pitch_factor=request.pitch_factor
+                instruct=request.instruct
             )
 
         elif request.mode == "voice_design":
             audio_data, sample_rate = await engine.voice_design_synthesize_async(
                 text=request.text,
                 design_prompt=request.design_prompt,
-                language=request.language,
-                speed_factor=request.speed_factor,
-                pitch_factor=request.pitch_factor
+                language=request.language
             )
 
         elif request.mode == "voice_clone":

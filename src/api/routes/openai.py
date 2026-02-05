@@ -106,30 +106,35 @@ async def openai_tts(
         audio_data, sample_rate = await engine.custom_voice_synthesize_async(
             text=request.input,
             speaker=speaker,
-            language="Chinese",  # OpenAI API 默认根据文本自动检测
-            speed_factor=request.speed
+            language="Chinese"  # OpenAI API 默认根据文本自动检测
         )
 
         # 根据格式返回音频
-        # 目前主要支持 wav 格式
-        audio_buffer = io.BytesIO()
-        wavfile.write(audio_buffer, sample_rate, audio_data)
-        audio_bytes = audio_buffer.getvalue()
+        # 支持 wav 和 pcm 格式
+        if request.response_format == "pcm":
+            # 原始 PCM 数据，无文件头
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            audio_bytes = audio_int16.tobytes()
+            media_type = "audio/l16;rate=24000;channels=1"
+        else:
+            # WAV 格式（默认）
+            audio_buffer = io.BytesIO()
+            wavfile.write(audio_buffer, sample_rate, audio_data)
+            audio_bytes = audio_buffer.getvalue()
 
-        # 确定 media_type
-        media_type_map = {
-            "wav": "audio/wav",
-            "mp3": "audio/mpeg",
-            "opus": "audio/opus",
-            "aac": "audio/aac",
-            "flac": "audio/flac",
-            "pcm": "audio/pcm"
-        }
-        media_type = media_type_map.get(request.response_format, "audio/wav")
+            # 确定 media_type
+            media_type_map = {
+                "wav": "audio/wav",
+                "mp3": "audio/mpeg",
+                "opus": "audio/opus",
+                "aac": "audio/aac",
+                "flac": "audio/flac",
+            }
+            media_type = media_type_map.get(request.response_format, "audio/wav")
 
         # 记录成功
         log_message(
-            f"OpenAI TTS Success: {len(audio_data)} samples, {sample_rate}Hz",
+            f"OpenAI TTS Success: {len(audio_data)} samples, {sample_rate}Hz, format={request.response_format}",
             'info'
         )
 

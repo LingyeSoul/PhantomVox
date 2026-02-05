@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 import logging
 import struct
 import numpy as np
-from typing import Optional, AsyncGenerator
+from typing import Optional, AsyncGenerator, Tuple
 
 from api.models import TTSRequest, OpenAITTSRequest
 from api.dependencies import get_tts_engine, get_voice_library, log_message
@@ -74,57 +74,44 @@ def create_wav_header(sample_rate: int, num_samples: int) -> bytes:
 
 
 async def stream_result_to_wav(
-    result_generator: AsyncGenerator[dict, None],
-    initial_header: bool = True
+    result_generator: AsyncGenerator[Tuple[np.ndarray, int], None],
+    initial_header: bool = True,
+    response_format: str = "wav"
 ) -> AsyncGenerator[bytes, None]:
     """
-    将流式生成结果转换为 WAV 音频块
+    将流式生成结果转换为音频块
 
     Args:
-        result_generator: 流式生成结果生成器
-        initial_header: 是否在第一个块前添加 WAV 头
+        result_generator: 流式生成结果生成器 (audio, sample_rate) 元组
+        initial_header: 是否在第一个块前添加 WAV 头（仅当 response_format="wav" 时）
+        response_format: 音频格式 ("wav", "pcm", "mp3", "opus")
 
     Yields:
-        bytes: WAV 音频数据块
+        bytes: 音频数据块
     """
-    first_chunk = True
     header_sent = False
     total_samples = 0
 
-    async for result in result_generator:
-        result_type = result.get('type')
+    async for audio, sample_rate in result_generator:
+        # 转换为 bytes (16-bit PCM)
+        audio_int16 = (audio * 32767).astype(np.int16)
+        audio_bytes = audio_int16.tobytes()
 
-        if result_type == 'audio_chunk':
-            audio = result['audio']
-            sample_rate = result['sample_rate']
+        # WAV 格式：第一个块发送 WAV 头
+        if response_format == "wav" and initial_header and not header_sent:
+            # 使用 WAV 格式允许的最大样本数（约 2GB 音频数据，超过 24 小时）
+            # WAV 格式限制：文件大小 < 4GB
+            max_samples = 0x7FFFFFE9
+            wav_header = create_wav_header(sample_rate, max_samples)
+            yield wav_header
+            header_sent = True
 
-            # 转换为 bytes (16-bit PCM)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            audio_bytes = audio_int16.tobytes()
+        # PCM/RAW 格式：直接发送音频数据，无需文件头
+        # 这样客户端可以立即开始播放，无需等待文件头
+        total_samples += len(audio)
+        yield audio_bytes
 
-            # 第一个块：发送 WAV 头（注意：我们不知道总样本数，使用最大值）
-            if initial_header and not header_sent:
-                # 使用 WAV 格式允许的最大样本数（约 2GB 音频数据，超过 24 小时）
-                # WAV 格式限制：文件大小 < 4GB
-                max_samples = 0x7FFFFFE9
-                wav_header = create_wav_header(sample_rate, max_samples)
-                yield wav_header
-                header_sent = True
-
-            total_samples += len(audio)
-            yield audio_bytes
-
-        elif result_type == 'done':
-            logger.info(f"流式生成完成，共 {total_samples} 样本")
-            break
-
-        elif result_type == 'error':
-            error_msg = result.get('error', '未知错误')
-            logger.error(f"流式生成错误: {error_msg}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"TTS generation failed: {error_msg}"
-            )
+    logger.info(f"流式生成完成，共 {total_samples} 样本")
 
 
 @router.post("/tts/streaming")
@@ -203,18 +190,14 @@ async def synthesize_speech_streaming(
                         text=request.text,
                         speaker=request.speaker,
                         language=request.language,
-                        instruct=request.instruct,
-                        speed_factor=request.speed_factor,
-                        pitch_factor=request.pitch_factor
+                        instruct=request.instruct
                     )
 
                 elif request.mode == "voice_design":
                     result_gen = engine.voice_design_synthesize_streaming_async(
                         text=request.text,
                         design_prompt=request.design_prompt,
-                        language=request.language,
-                        speed_factor=request.speed_factor,
-                        pitch_factor=request.pitch_factor
+                        language=request.language
                     )
 
                 elif request.mode == "voice_clone":
@@ -284,13 +267,18 @@ async def synthesize_speech_streaming(
         stats.record_request(success=True)
 
         # 返回流式响应
+        # 添加完整的禁缓冲响应头以确保客户端实时接收数据
         return StreamingResponse(
             audio_stream_generator(),
             media_type="audio/wav",
             headers={
                 "Content-Disposition": 'attachment; filename="speech.wav"',
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",  # 禁用nginx缓冲
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+                "Transfer-Encoding": "chunked",  # 明确标识分块传输
+                "Connection": "keep-alive",  # 保持连接
                 "X-Content-Type-Options": "nosniff"
             }
         )
@@ -320,6 +308,12 @@ async def openai_tts_streaming(
     此端点兼容 OpenAI TTS API 格式，返回真正的流式音频（边生成边输出）。
     可以使用标准 OpenAI SDK 调用。
 
+    **支持的格式**：
+    - wav: 标准WAV格式（带文件头）
+    - pcm: 原始PCM数据（无文件头，推荐用于流式播放）
+    - mp3: MP3格式（未来支持）
+    - opus: Opus格式（未来支持）
+
     **使用 curl 调用示例**：
     ```bash
     curl -N http://localhost:8848/v1/audio/speech/streaming \\
@@ -328,9 +322,10 @@ async def openai_tts_streaming(
       -d '{
         "model": "tts-1",
         "input": "你好，世界！",
-        "voice": "aloy"
+        "voice": "aloy",
+        "response_format": "pcm"
       }' \\
-      --output speech.wav
+      --output speech.pcm
     ```
 
     **使用 Python OpenAI SDK 调用示例**：
@@ -345,11 +340,12 @@ async def openai_tts_streaming(
     response = client.audio.speech.create(
         model="tts-1",
         voice="aloy",
-        input="你好，世界！"
+        input="你好，世界！",
+        response_format="pcm"
     )
 
     # 流式保存到文件
-    with open("speech.wav", "wb") as f:
+    with open("speech.pcm", "wb") as f:
         for chunk in response.iter_bytes(chunk_size=4096):
             f.write(chunk)
     ```
@@ -361,7 +357,7 @@ async def openai_tts_streaming(
         # 记录请求
         log_message(
             f"[REAL-STREAMING] OpenAI TTS Request: model={request.model}, voice={request.voice} -> {speaker}, "
-            f"text='{request.input[:50]}...'",
+            f"format={request.response_format}, text='{request.input[:50]}...'",
             'info'
         )
 
@@ -372,6 +368,21 @@ async def openai_tts_streaming(
                 detail="Streaming is not enabled. Please restart the server with enable_streaming=True"
             )
 
+        # 确定媒体类型
+        media_type_map = {
+            "wav": "audio/wav",
+            "pcm": "audio/raw",  # 原始PCM，推荐用于流式
+            "mp3": "audio/mpeg",
+            "opus": "audio/opus",
+            "aac": "audio/aac",
+            "flac": "audio/flac"
+        }
+        media_type = media_type_map.get(request.response_format, "audio/wav")
+
+        # 添加采样率到媒体类型（对于raw PCM）
+        if request.response_format == "pcm":
+            media_type = "audio/l16;rate=24000;channels=1"
+
         async def audio_stream_generator():
             """异步音频流生成器"""
             try:
@@ -379,12 +390,13 @@ async def openai_tts_streaming(
                 result_gen = engine.custom_voice_synthesize_streaming_async(
                     text=request.input,
                     speaker=speaker,
-                    language="Chinese",  # OpenAI API 默认根据文本自动检测
-                    speed_factor=request.speed
+                    language="Chinese"  # OpenAI API 默认根据文本自动检测
                 )
 
-                # 转换为 WAV 流
-                async for wav_chunk in stream_result_to_wav(result_gen):
+                # 转换为音频流（根据格式决定是否添加WAV头）
+                # 对于 PCM/RAW 格式，不添加文件头，客户端可以立即播放
+                use_header = (request.response_format == "wav")
+                async for wav_chunk in stream_result_to_wav(result_gen, initial_header=use_header, response_format=request.response_format):
                     yield wav_chunk
 
             except Exception as e:
@@ -397,18 +409,24 @@ async def openai_tts_streaming(
 
         # 记录成功
         log_message(
-            f"[REAL-STREAMING] OpenAI TTS Success: Starting stream",
+            f"[REAL-STREAMING] OpenAI TTS Success: Starting stream (format={request.response_format})",
             'info'
         )
 
         # 返回音频流
+        # 添加完整的禁缓冲响应头以确保客户端实时接收数据
         return StreamingResponse(
             audio_stream_generator(),
-            media_type="audio/wav",
+            media_type=media_type,
             headers={
-                "Content-Disposition": f'attachment; filename="speech.wav"',
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no"
+                "Content-Disposition": f'attachment; filename="speech.{request.response_format}"',
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+                "Transfer-Encoding": "chunked",  # 明确标识分块传输
+                "Connection": "keep-alive",  # 保持连接
+                "X-Content-Type-Options": "nosniff"
             }
         )
 
