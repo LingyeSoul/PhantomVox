@@ -26,7 +26,7 @@ from .exceptions import (
     TTSTimeoutError,
     TTSSynthesisError
 )
-from .streaming_patch import apply_streaming_patch, get_streaming_generator
+from .apply_streaming_patch import apply_streaming_patch_to_qwen_tts
 
 logger = logging.getLogger(__name__)
 
@@ -194,10 +194,15 @@ class QwenEngine:
 
             if tokenizer_dir is None and self.model_path:
                 # 自动查找：模型路径父目录/tokenizer-12hz
-                model_parent_dir = os.path.dirname(self.model_path)
-                tokenizer_dir = os.path.join(model_parent_dir, "tokenizer-12hz")
-                logger.info(f"[DEBUG] 自动计算的 tokenizer_dir: {tokenizer_dir}")
-                logger.info(f"[DEBUG] tokenizer_dir 是否存在: {os.path.exists(tokenizer_dir)}")
+                # 只在本地路径（非 HuggingFace Hub ID）时查找
+                if os.path.isdir(self.model_path) or os.path.exists(self.model_path):
+                    model_parent_dir = os.path.dirname(self.model_path)
+                    tokenizer_dir = os.path.join(model_parent_dir, "tokenizer-12hz")
+                    logger.info(f"[DEBUG] 自动计算的 tokenizer_dir: {tokenizer_dir}")
+                    logger.info(f"[DEBUG] tokenizer_dir 是否存在: {os.path.exists(tokenizer_dir)}")
+                else:
+                    logger.info(f"[DEBUG] model_path 是 HuggingFace Hub ID，跳过本地 tokenizer 查找")
+                    tokenizer_dir = None
 
             if tokenizer_dir and os.path.exists(tokenizer_dir):
                 _SHARED_TOKENIZER_DIR = tokenizer_dir
@@ -207,6 +212,7 @@ class QwenEngine:
             else:
                 if tokenizer_dir:
                     logger.warning(f"未找到共享 tokenizer ({tokenizer_dir})，使用模型内置 tokenizer")
+                    logger.info(f"提示: 如果您有本地 tokenizer，请使用 shared_tokenizer_path 参数指定")
                 _SHARED_TOKENIZER_DIR = None
 
             # 构建模型加载参数
@@ -243,13 +249,8 @@ class QwenEngine:
             # 应用流式生成 patch
             if self.enable_streaming:
                 try:
-                    # self.model 是 Qwen3TTSModel，它的 model 属性是 Qwen3TTSForConditionalGeneration
-                    # speech_tokenizer 在 Qwen3TTSForConditionalGeneration 上
-                    apply_streaming_patch(
-                        model=self.model.model,
-                        tokenizer=self.model.model.speech_tokenizer,
-                        chunk_size_tokens=self.streaming_chunk_size,
-                    )
+                    # 应用第三方 streaming 项目的修改
+                    apply_streaming_patch_to_qwen_tts()
                     logger.info(f"✓ 流式生成 patch 已应用 (chunk_size={self.streaming_chunk_size})")
                 except Exception as e:
                     logger.warning(f"流式生成 patch 应用失败: {e}")
@@ -829,12 +830,6 @@ class QwenEngine:
         if not text or not text.strip():
             raise TTSInvalidParameterError("输入文本不能为空")
 
-        # 检查流式生成器是否可用
-        streaming_gen = get_streaming_generator()
-        if streaming_gen is None:
-            logger.error("流式生成器未初始化")
-            raise TTSModelNotLoadedError("流式生成器未初始化，请检查 patch 是否正确应用")
-
         logger.info(f"[Streaming] 正在流式生成语音 (Custom Voice): {text[:50]}...")
 
         # 使用 Queue 实现真正的实时流式输出
@@ -855,12 +850,31 @@ class QwenEngine:
                     **kwargs
                 )
 
-                for result in streaming_gen.generate_streaming(**params):
-                    # 将结果放入队列（非阻塞）
+                # 调用官方 streaming 实现的 stream_generate_pcm 方法
+                # 直接返回 PCM chunks，不再使用旧的 wrapper
+                for audio_chunk, sample_rate in self.model.model.stream_generate_pcm(
+                    emit_every_frames=self.streaming_chunk_size,
+                    decode_window_frames=80,
+                    overlap_samples=0,
+                    **params
+                ):
+                    # 将 PCM chunk 包装成标准格式
+                    result = {
+                        'type': 'audio_chunk',
+                        'audio': audio_chunk,
+                        'sample_rate': sample_rate,
+                        'is_final': False,
+                    }
                     asyncio.run_coroutine_threadsafe(
                         result_queue.put(result),
                         loop
                     )
+
+                # 发送完成消息
+                asyncio.run_coroutine_threadsafe(
+                    result_queue.put({'type': 'done', 'sample_rate': 24000}),
+                    loop
+                )
 
             except Exception as e:
                 logger.error(f"✗ [Streaming] 生成线程异常: {str(e)}", exc_info=True)
@@ -925,10 +939,6 @@ class QwenEngine:
         if not text or not text.strip():
             raise TTSInvalidParameterError("输入文本不能为空")
 
-        streaming_gen = get_streaming_generator()
-        if streaming_gen is None:
-            raise TTSModelNotLoadedError("流式生成器未初始化")
-
         logger.info(f"[Streaming] 正在流式生成语音 (Voice Design): {text[:50]}...")
 
         # 使用 Queue 实现真正的实时流式输出
@@ -947,7 +957,7 @@ class QwenEngine:
                     **kwargs
                 )
 
-                for result in streaming_gen.generate_streaming(**params):
+                for result in self.model.model.generate_streaming_v4(**params):
                     asyncio.run_coroutine_threadsafe(
                         result_queue.put(result),
                         loop
@@ -1019,10 +1029,6 @@ class QwenEngine:
         if not text or not text.strip():
             raise TTSInvalidParameterError("输入文本不能为空")
 
-        streaming_gen = get_streaming_generator()
-        if streaming_gen is None:
-            raise TTSModelNotLoadedError("流式生成器未初始化")
-
         logger.info(f"[Streaming] 正在流式生成语音 (Voice Clone): {text[:50]}...")
 
         # 使用 Queue 实现真正的实时流式输出
@@ -1043,7 +1049,7 @@ class QwenEngine:
                     **kwargs
                 )
 
-                for result in streaming_gen.generate_streaming(**params):
+                for result in self.model.model.generate_streaming_v4(**params):
                     asyncio.run_coroutine_threadsafe(
                         result_queue.put(result),
                         loop

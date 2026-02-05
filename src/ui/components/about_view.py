@@ -118,6 +118,7 @@ class AboutView(ft.Container):
             ("PhantomVox GitHub", "https://github.com/LingyeSoul/PhantomVox"),
             ("Qwen3-TTS GitHub", "https://github.com/QwenLM/Qwen3-TTS"),
             ("Qwen3-TTS ModelScope", "https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
+            ("Qwen3-TTS-streaming GitHub", "https://github.com/dffdeeq/Qwen3-TTS-streaming"),
             ("Flet 官方文档", "https://flet.dev/docs/"),
         ]
 
@@ -155,6 +156,11 @@ class AboutView(ft.Container):
                     ft.Container(height=3),
                     ft.Text(
                         "• Qwen Team - 提供 Qwen3-TTS 模型",
+                        size=12,
+                        color=ft.Colors.GREY_400
+                    ),
+                    ft.Text(
+                        "• dffdeeq - 提供 Qwen3-TTS-streaming 实现",
                         size=12,
                         color=ft.Colors.GREY_400
                     ),

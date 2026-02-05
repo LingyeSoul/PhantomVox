@@ -165,6 +165,16 @@ class PhantomUI:
                 self.terminal.add_log(f"模型路径: {model_path}")
                 self.terminal.add_log(f"设备: {device}")
 
+                # 准备共享 tokenizer 路径
+                # tokenizer 应该在 models_dir/tokenizer-12hz
+                tokenizer_path = self.model_manager.models_dir / "tokenizer-12hz"
+                shared_tokenizer_path = str(tokenizer_path) if tokenizer_path.exists() else None
+
+                if shared_tokenizer_path:
+                    self.terminal.add_log(f"使用共享 tokenizer: {shared_tokenizer_path}")
+                else:
+                    self.terminal.add_log("未找到共享 tokenizer，将使用模型内置 tokenizer")
+
                 # 根据模型ID确定模型类型
                 if "customvoice" in model_id:
                     model_type = "CustomVoice"
@@ -180,7 +190,8 @@ class PhantomUI:
                     model_type=model_type,
                     device=device,
                     dtype=dtype,
-                    attn_implementation=attn_implementation
+                    attn_implementation=attn_implementation,
+                    shared_tokenizer_path=shared_tokenizer_path
                 )
 
                 self.terminal.add_log("✓ TTS 引擎初始化完成")
