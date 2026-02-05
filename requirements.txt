@@ -4,7 +4,7 @@
 flet==0.80.5
 
 # TTS engine
-qwen-tts>=0.0.5
+# qwen-tts>=0.0.5  # Using local build instead (qwen_tts-0.0.6-py3-none-any.whl)
 modelscope>=1.34.0
 
 # Torch compilation dependencies (Windows only for torch.compile)

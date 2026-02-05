@@ -15,6 +15,9 @@ echo [2/4] Installing PyTorch 2.9
 echo [3/4] Installing dependencies...
 "%PYTHON_EXE%" -m pip install -r requirements.txt
 
+echo [3.5/4] Installing local qwen-tts wheel...
+"%PYTHON_EXE%" -m pip install "%~dp0qwen_tts-0.0.6-py3-none-any.whl" --force-reinstall --no-deps
+
 echo [4/4] Installing flash-attention...
 "%PYTHON_EXE%" -m pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.6/flash_attn-2.8.3%2Bcu128torch2.9-cp312-cp312-win_amd64.whl
 
