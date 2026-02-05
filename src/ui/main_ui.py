@@ -443,8 +443,13 @@ class PhantomUI:
         """处理设置更改事件"""
         # 如果 TTS 引擎已初始化，清除它以强制重新初始化
         if self._tts_engine is not None:
+            # 先卸载旧模型以释放资源
+            self.terminal.add_log("设置已更改，正在卸载旧模型...")
+            self._tts_engine.unload()
+
+            # 然后清除引擎引用
             self._tts_engine = None
-            self.terminal.add_log("设置已更改，TTS 引擎将重新初始化")
+            self.terminal.add_log("TTS 引擎将重新初始化")
 
     def _clear_tts_engine_cache(self, model_id: str = None):
         """清除 TTS 引擎缓存以强制重新初始化
@@ -463,6 +468,11 @@ class PhantomUI:
             self._sync_model_dropdowns(model_id)
 
         if self._tts_engine is not None:
+            # 先卸载旧模型以释放显存/内存
+            self.terminal.add_log("正在卸载旧模型...")
+            self._tts_engine.unload()
+
+            # 然后清除引擎引用
             self._tts_engine = None
             self.terminal.add_log("TTS 引擎缓存已清除，将使用新选择的模型")
         else:

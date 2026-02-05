@@ -933,6 +933,38 @@ class QwenEngine:
             logger.error(f"创建并保存特征失败: {e}")
             return False
 
+    def unload(self):
+        """
+        卸载模型并释放资源
+
+        释放模型占用的显存和内存
+        """
+        if self.model is None:
+            return
+
+        try:
+            logger.info("正在卸载 TTS 模型...")
+
+            # 释放模型引用
+            if hasattr(self.model, 'model'):
+                del self.model.model
+
+            if hasattr(self.model, 'processor'):
+                del self.model.processor
+
+            del self.model
+            self.model = None
+
+            # 清理 CUDA 缓存（如果使用 CUDA）
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("✓ CUDA 缓存已清理")
+
+            logger.info("✓ TTS 模型已卸载")
+
+        except Exception as e:
+            logger.error(f"✗ 模型卸载失败: {str(e)}")
+
     # ========== 辅助方法 ==========
 
     def get_supported_speakers(self) -> list:
