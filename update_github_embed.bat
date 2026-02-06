@@ -44,8 +44,8 @@ echo [INFO] New updates found!
 echo [INFO] Pulling changes...
 echo.
 
-REM Pull changes
-"%GIT_EXE%" pull origin main
+REM Pull changes (with autostash and rebase)
+"%GIT_EXE%" pull --rebase --autostash origin main
 
 echo.
 echo ========================================

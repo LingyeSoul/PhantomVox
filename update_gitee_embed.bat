@@ -51,8 +51,8 @@ echo [INFO] New updates found!
 echo [INFO] Pulling changes...
 echo.
 
-REM Pull changes from Gitee
-"%GIT_EXE%" pull gitee main
+REM Pull changes from Gitee (with autostash and rebase)
+"%GIT_EXE%" pull --rebase --autostash gitee main
 
 echo.
 echo ========================================

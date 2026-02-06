@@ -41,8 +41,8 @@ echo [INFO] New updates found!
 echo [INFO] Pulling changes...
 echo.
 
-REM Pull changes
-git pull origin main
+REM Pull changes (with autostash and rebase)
+git pull --rebase --autostash origin main
 
 echo.
 echo ========================================

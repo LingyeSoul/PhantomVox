@@ -48,8 +48,8 @@ echo [INFO] New updates found!
 echo [INFO] Pulling changes...
 echo.
 
-REM Pull changes from Gitee
-git pull gitee main
+REM Pull changes from Gitee (with autostash and rebase)
+git pull --rebase --autostash gitee main
 
 echo.
 echo ========================================
