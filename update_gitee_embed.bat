@@ -39,7 +39,7 @@ REM Fetch updates from Gitee
 
 REM Check if there are updates
 for /f %%i in ('"%GIT_EXE%" rev-parse HEAD') do set LOCAL=%%i
-for /f %%i in ('"%GIT_EXE%" rev-parse gitee/master') do set REMOTE=%%i
+for /f %%i in ('"%GIT_EXE%" rev-parse gitee/main') do set REMOTE=%%i
 
 if "%LOCAL%"=="%REMOTE%" (
     echo [INFO] Already up to date!
@@ -52,7 +52,7 @@ echo [INFO] Pulling changes...
 echo.
 
 REM Pull changes from Gitee
-"%GIT_EXE%" pull gitee master
+"%GIT_EXE%" pull gitee main
 
 echo.
 echo ========================================
