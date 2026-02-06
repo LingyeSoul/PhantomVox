@@ -1,16 +1,21 @@
 @echo off
 echo ========================================
-echo PhantomVox Command Environment
+echo PhantomVox Command Environment (System VEnv)
 echo ========================================
 echo.
 
-set "PYTHON_HOME=%~dp0python"
-set "PYTHONPATH=%~dp0python\Lib;%~dp0python\Lib\site-packages"
-set "PATH=%~dp0python;%~dp0python\Scripts;%~dp0env;%PATH%"
+REM Check if virtual environment exists
+if not exist "%~dp0.venv\Scripts\activate.bat" (
+    echo ERROR: Virtual environment not found!
+    echo Please run setup_env_venv.bat first.
+    pause
+    exit /b 1
+)
 
-echo Python environment activated :
-echo   Python:    python\python.exe
-echo   Bin tools: env\ (sox.exe, etc)
+REM Activate virtual environment
+call "%~dp0.venv\Scripts\activate.bat"
+
+echo Virtual environment activated: .venv\
 echo.
 echo You can now use:
 echo   python --version

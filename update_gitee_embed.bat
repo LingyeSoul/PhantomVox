@@ -1,14 +1,16 @@
 @echo off
 echo ========================================
-echo  PhantomVox Updater (Gitee) - Git
+echo  PhantomVox Updater (Gitee) - Embed
 echo ========================================
 echo.
 
-REM Check if git exists
-git --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Git not found!
-    echo Please install Git first.
+REM Set git path
+set "GIT_EXE=%~dp0env\cmd\git.exe"
+
+REM Check if embedded git exists
+if not exist "%GIT_EXE%" (
+    echo ERROR: Git not found in env folder!
+    echo Path: %GIT_EXE%
     pause
     exit /b 1
 )
@@ -21,22 +23,23 @@ if not exist "%~dp0.git" (
     exit /b 1
 )
 
+echo [INFO] Git: env\cmd\git.exe
 echo [INFO] Fetching updates from Gitee...
 echo.
 
 REM Add Gitee remote if not exists
-git remote get-url gitee >nul 2>&1
+"%GIT_EXE%" remote get-url gitee >nul 2>&1
 if errorlevel 1 (
     echo [INFO] Adding Gitee remote...
-    git remote add gitee https://gitee.com/lingyesoul/PhantomVox.git
+    "%GIT_EXE%" remote add gitee https://gitee.com/lingyesoul/PhantomVox.git
 )
 
 REM Fetch updates from Gitee
-git fetch gitee
+"%GIT_EXE%" fetch gitee
 
 REM Check if there are updates
-for /f %%i in ('git rev-parse HEAD') do set LOCAL=%%i
-for /f %%i in ('git rev-parse gitee/master') do set REMOTE=%%i
+for /f %%i in ('"%GIT_EXE%" rev-parse HEAD') do set LOCAL=%%i
+for /f %%i in ('"%GIT_EXE%" rev-parse gitee/master') do set REMOTE=%%i
 
 if "%LOCAL%"=="%REMOTE%" (
     echo [INFO] Already up to date!
@@ -49,7 +52,7 @@ echo [INFO] Pulling changes...
 echo.
 
 REM Pull changes from Gitee
-git pull gitee master
+"%GIT_EXE%" pull gitee master
 
 echo.
 echo ========================================

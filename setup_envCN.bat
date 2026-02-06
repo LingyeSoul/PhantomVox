@@ -19,8 +19,6 @@ if not exist "%~dp0.venv\Scripts\activate.bat" (
 echo Activating virtual environment...
 call "%~dp0.venv\Scripts\activate.bat"
 
-REM Add env\ to PATH for binary tools (sox.exe, etc)
-set "PATH=%~dp0env;%PATH%"
 
 echo [1/4] Upgrading pip...
 python -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -32,10 +30,10 @@ echo [3/4] Installing dependencies...
 python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 echo [3.5/4] Installing local qwen-tts wheel...
-python -m pip install "%~dp0qwen_tts-0.0.6-py3-none-any.whl" --force-reinstall --no-deps
+python -m pip install "%~dp0qwen_tts-0.0.6-py3-none-any.whl"
 
 echo [4/4] Installing flash-attention...
-python -m pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.6/flash_attn-2.8.3%%2Bcu128torch2.9-cp312-cp312-win_amd64.whl
+python -m pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.6/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-win_amd64.whl
 
 echo ========================================
 echo Setup completed!
@@ -44,6 +42,10 @@ echo.
 echo Installed versions:
 python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.version.cuda}')"
 echo.
+echo ========================================
+echo Please download and install SoX from https://sourceforge.net/projects/sox/
+echo qwen-tts require sox
+echo ========================================
 echo Usage:
 echo   Run start_venv.bat to launch the program
 echo   Run cmd_venv.bat for command line environment

@@ -1,12 +1,21 @@
 @echo off
 echo ========================================
-echo Starting PhantomVox
+echo Starting PhantomVox (System VEnv)
 echo ========================================
 echo.
 
-set "PATH=%~dp0python;%~dp0python\Scripts;%~dp0env;%PATH%"
+REM Check if virtual environment exists
+if not exist "%~dp0.venv\Scripts\activate.bat" (
+    echo ERROR: Virtual environment not found!
+    echo Please run setup_env_venv.bat first.
+    pause
+    exit /b 1
+)
 
-%~dp0python\python.exe src\main.py
+REM Activate virtual environment
+call "%~dp0.venv\Scripts\activate.bat"
+
+python src\main.py
 
 echo.
 echo ========================================

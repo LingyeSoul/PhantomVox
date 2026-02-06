@@ -25,6 +25,8 @@ AGENTS.md
 /models
 /output
 
-# Update script temporary copy
-update.py
 /vocal
+/.venv
+/python-3.12.9-embed
+update.py
+\!整合包使用说明.txt

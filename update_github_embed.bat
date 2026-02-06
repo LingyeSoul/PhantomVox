@@ -1,14 +1,16 @@
 @echo off
 echo ========================================
-echo  PhantomVox Updater (GitHub) - Git
+echo  PhantomVox Updater (GitHub) - Embed
 echo ========================================
 echo.
 
-REM Check if git exists
-git --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Git not found!
-    echo Please install Git first.
+REM Set git path
+set "GIT_EXE=%~dp0env\cmd\git.exe"
+
+REM Check if embedded git exists
+if not exist "%GIT_EXE%" (
+    echo ERROR: Git not found in env folder!
+    echo Path: %GIT_EXE%
     pause
     exit /b 1
 )
@@ -21,15 +23,16 @@ if not exist "%~dp0.git" (
     exit /b 1
 )
 
+echo [INFO] Git: env\cmd\git.exe
 echo [INFO] Fetching updates from GitHub...
 echo.
 
 REM Fetch updates from remote
-git fetch origin
+"%GIT_EXE%" fetch origin
 
 REM Check if there are updates
-for /f %%i in ('git rev-parse HEAD') do set LOCAL=%%i
-for /f %%i in ('git rev-parse origin/main') do set REMOTE=%%i
+for /f %%i in ('"%GIT_EXE%" rev-parse HEAD') do set LOCAL=%%i
+for /f %%i in ('"%GIT_EXE%" rev-parse origin/main') do set REMOTE=%%i
 
 if "%LOCAL%"=="%REMOTE%" (
     echo [INFO] Already up to date!
@@ -42,7 +45,7 @@ echo [INFO] Pulling changes...
 echo.
 
 REM Pull changes
-git pull origin main
+"%GIT_EXE%" pull origin main
 
 echo.
 echo ========================================
