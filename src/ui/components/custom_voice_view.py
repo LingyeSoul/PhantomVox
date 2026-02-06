@@ -339,8 +339,8 @@ class CustomVoiceView(ft.Container):
             self.config_manager.set("custom_voice.default_speaker", speaker)
             self.config_manager.set("custom_voice.default_language", language)
 
-            # 获取TTS引擎
-            tts_engine = self.tts_engine_getter()
+            # 获取TTS引擎（异步）
+            tts_engine = await self.tts_engine_getter()
 
             # 生成语音（使用后台线程，避免阻塞UI）
             self.terminal.add_log(f"说话人: {speaker}, 语言: {language}")

@@ -493,7 +493,7 @@ class VoiceCloneView(ft.Container):
                 return
 
             # 获取TTS引擎（需要在克隆分支中单独获取）
-            tts_engine = self.tts_engine_getter()
+            tts_engine = await self.tts_engine_getter()
 
             # 检查是否有预计算的特征
             if "prompt_features" in clone and clone["prompt_features"]:
@@ -594,8 +594,8 @@ class VoiceCloneView(ft.Container):
             pass
 
         try:
-            # 获取TTS引擎
-            tts_engine = self.tts_engine_getter()
+            # 获取TTS引擎（异步）
+            tts_engine = await self.tts_engine_getter()
 
             # 获取参数
             x_vector_only = self.x_vector_only_checkbox.value

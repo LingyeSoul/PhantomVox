@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 _tts_engine_getter: Optional[Callable] = None
 _voice_library = None
 _log_callback: Optional[Callable] = None
+_api_engine_proxy = None
 
 
 # ========== 依赖管理函数 ==========
@@ -35,19 +36,25 @@ def initialize_dependencies(
         voice_library: VoiceLibrary 实例
         log_callback: 日志回调函数
     """
-    global _tts_engine_getter, _voice_library, _log_callback
+    global _tts_engine_getter, _voice_library, _log_callback, _api_engine_proxy
     _tts_engine_getter = tts_engine_getter
     _voice_library = voice_library
     _log_callback = log_callback
-    logger.info("FastAPI dependencies initialized")
+
+    # 创建API引擎代理
+    from api.engine_proxy import APIEngineProxy
+    _api_engine_proxy = APIEngineProxy(tts_engine_getter)
+
+    logger.info("FastAPI dependencies initialized with task engine integration")
 
 
 def cleanup_dependencies():
     """清理全局依赖"""
-    global _tts_engine_getter, _voice_library, _log_callback
+    global _tts_engine_getter, _voice_library, _log_callback, _api_engine_proxy
     _tts_engine_getter = None
     _voice_library = None
     _log_callback = None
+    _api_engine_proxy = None
     logger.info("FastAPI dependencies cleaned up")
 
 
@@ -55,28 +62,21 @@ def cleanup_dependencies():
 
 async def get_tts_engine():
     """
-    获取 TTS 引擎实例（依赖注入）
+    获取 TTS 引擎实例（返回代理）
 
     Returns:
-        QwenEngine: TTS 引擎实例
+        APIEngineProxy: TTS 引擎代理实例
 
     Raises:
         HTTPException: 当引擎未初始化时
     """
-    if _tts_engine_getter is None:
+    if _api_engine_proxy is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="TTS engine not initialized"
         )
 
-    engine = _tts_engine_getter()
-    if engine is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="TTS engine not available"
-        )
-
-    return engine
+    return _api_engine_proxy
 
 
 def get_voice_library():

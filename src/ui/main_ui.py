@@ -8,7 +8,8 @@ PhantomVox 主 UI 控制器
 import flet as ft
 import logging
 import asyncio
-from typing import Optional
+from typing import Optional, AsyncGenerator, Tuple
+import numpy as np
 
 from ui.components.app_bar import PhantomAppBar
 from ui.components.custom_voice_view import CustomVoiceView
@@ -21,11 +22,51 @@ from ui.components.model_manager_view import ModelManagerView
 from ui.components.tts_service_view import TTSServiceView
 from core.terminal import AsyncTerminal
 from core.model_manager import ModelManager
+from core.task_engine import get_task_engine, TaskType
+from core.engine_proxy_base import BaseEngineProxy
 from config.config_manager import ConfigManager
 from tts.qwen_engine import QwenEngine
 from tts.audio_manager import AudioManager
+from utils.async_helpers import create_task_with_error_handling
 
 logger = logging.getLogger(__name__)
+
+
+class SafeTTSEngineProxy(BaseEngineProxy):
+    """
+    TTS 引擎安全代理
+
+    包装 QwenEngine，确保所有操作都通过任务引擎执行，防止并发冲突。
+    继承BaseEngineProxy，使用UI terminal记录日志。
+    """
+
+    def __init__(self, engine: QwenEngine, task_engine, terminal):
+        """
+        初始化代理
+
+        Args:
+            engine: 实际的 TTS 引擎
+            task_engine: 任务引擎实例
+            terminal: 终端日志实例
+        """
+        # 保存引擎引用，用于同步方法
+        self._engine = engine
+        self._terminal = terminal
+
+        # 调用父类初始化，传入引擎getter函数
+        super().__init__(
+            engine_getter=lambda: engine,
+            task_engine=task_engine
+        )
+
+    def _log(self, message: str):
+        """
+        记录日志到UI terminal
+
+        Args:
+            message: 日志消息
+        """
+        self._terminal.add_log(f"[任务队列] {message}")
 
 
 class PhantomUI:
@@ -51,10 +92,24 @@ class PhantomUI:
         # 初始化声音库管理器
         self.voice_library = VoiceLibrary(self.config_manager)
 
+        # 初始化任务引擎
+        self.task_engine = get_task_engine()
+
+        # 启动任务引擎（带错误处理）
+        def handle_task_engine_start_error(e):
+            self.terminal.add_log(f"❌ 任务引擎启动失败: {str(e)}")
+            self.terminal.add_log("TTS 功能将无法使用，请重启应用")
+
+        create_task_with_error_handling(
+            self.task_engine.start(),
+            task_name="TaskEngineStartup",
+            on_error=handle_task_engine_start_error
+        )
+
         # 懒加载组件
         self._tts_engine: Optional[QwenEngine] = None
         self._audio_manager: Optional[AudioManager] = None
-        self._engine_lock = asyncio.Lock()
+        self._engine_loading_event = asyncio.Event()  # 加载完成事件
 
         # 当前视图索引
         self._current_view_index = 0
@@ -109,111 +164,172 @@ class PhantomUI:
 
         logger.info("PhantomVox UI 初始化完成")
 
-    @property
-    def tts_engine(self) -> QwenEngine:
-        """懒加载：TTS 引擎"""
-        if self._tts_engine is None:
-            self.terminal.add_log("正在初始化 TTS 引擎...")
+    async def _load_model_async(self, model_id: str) -> SafeTTSEngineProxy:
+        """
+        异步加载模型（带锁保护）
 
+        Args:
+            model_id: 要加载的模型ID
+
+        Returns:
+            SafeTTSEngineProxy: 加载完成的安全代理
+        """
+        self.terminal.add_log("正在加载模型...")
+
+        try:
+            # 获取模型路径
+            model_path = self.model_manager.get_model_path(model_id)
+            if not model_path:
+                raise RuntimeError(f"模型路径无效: {model_id}")
+
+            device = self.config_manager.get("model.device", "auto")
+            dtype = self.config_manager.get("model.dtype", "bfloat16")
+            attn_implementation = self.config_manager.get("model.attn_implementation", "sdpa")
+
+            model_info = self.model_manager.get_model_info(model_id)
+            self.terminal.add_log(f"使用模型: {model_info.name if model_info else model_id}")
+            self.terminal.add_log(f"模型ID: {model_id}")
+            self.terminal.add_log(f"设备: {device}")
+
+            # 准备共享 tokenizer 路径
+            tokenizer_path = self.model_manager.models_dir / "tokenizer-12hz"
+            shared_tokenizer_path = str(tokenizer_path) if tokenizer_path.exists() else None
+
+            # 根据模型ID确定模型类型
+            if "customvoice" in model_id:
+                model_type = "CustomVoice"
+            elif "voicedesign" in model_id:
+                model_type = "VoiceDesign"
+            elif "base" in model_id:
+                model_type = "Base"
+            else:
+                model_type = None
+
+            # 创建原始引擎
+            raw_engine = QwenEngine(
+                model_path=str(model_path),
+                model_type=model_type,
+                device=device,
+                dtype=dtype,
+                attn_implementation=attn_implementation,
+                shared_tokenizer_path=shared_tokenizer_path,
+                enable_streaming=True,
+                streaming_decode_window=80
+            )
+
+            # 包装为安全代理
+            proxy = SafeTTSEngineProxy(
+                engine=raw_engine,
+                task_engine=self.task_engine,
+                terminal=self.terminal
+            )
+
+            self.terminal.add_log("✓ 模型加载完成")
+
+            return proxy
+
+        except Exception as e:
+            self.terminal.add_log(f"✗ 模型加载失败: {str(e)}")
+            raise
+
+    def _get_model_id(self) -> str:
+        """
+        确定要使用的模型ID
+
+        Returns:
+            str: 模型ID
+        """
+        # 使用 _current_model_id 或尝试获取选中的模型
+        model_id = self._current_model_id
+
+        self.terminal.add_log(f"DEBUG: _current_model_id = {model_id}")
+
+        # 如果没有指定模型，尝试从下拉框获取
+        if not model_id:
+            model_id = getattr(self, 'model_dropdown', None)
+            if model_id is not None:
+                model_id = model_id.value
+            self.terminal.add_log(f"DEBUG: 从 model_dropdown 获取 model_id = {model_id}")
+
+        # 如果仍然没有模型，根据当前页面选择对应类型的模型
+        if not model_id:
+            # 根据当前页面确定模型类型
+            if self._current_view_index == 0:  # Custom Voice
+                model_type = "customvoice"
+            elif self._current_view_index == 1:  # Voice Design
+                model_type = "voicedesign"
+            elif self._current_view_index == 2:  # Voice Clone
+                model_type = "base"
+            else:
+                model_type = None
+
+            if model_type:
+                usable_models = self.model_manager.list_usable_models_by_type(model_type)
+                self.terminal.add_log(f"DEBUG: 当前页面需要 {model_type} 类型模型")
+            else:
+                usable_models = self.model_manager.list_usable_models()
+
+            self.terminal.add_log(f"DEBUG: 可用模型列表 ({model_type or 'all'}) = {usable_models}")
+
+            if not usable_models:
+                # 没有可用的模型
+                self.terminal.add_log("✗ 没有可用的 TTS 模型，请先在「模型管理」中下载模型")
+
+                # 检查是否有已安装但不可用的模型
+                installed = self.model_manager.get_installed_models()
+                if installed:
+                    self.terminal.add_log("提示: 已安装的模型缺少依赖，请重新下载")
+
+                raise RuntimeError("没有可用的 TTS 模型")
+
+            model_id = usable_models[0]
+            self.terminal.add_log(f"DEBUG: 使用第一个可用模型 = {model_id}")
+
+        return model_id
+
+    async def get_tts_engine(self) -> SafeTTSEngineProxy:
+        """
+        获取 TTS 引擎（异步，使用事件等待防止重复加载）
+
+        Returns:
+            SafeTTSEngineProxy: TTS 引擎代理
+        """
+        # 如果引擎未加载且事件未设置（表示没有正在进行的加载）
+        if self._tts_engine is None and not self._engine_loading_event.is_set():
             try:
-                # 使用 _current_model_id 或尝试获取选中的模型
-                model_id = self._current_model_id
-
-                self.terminal.add_log(f"DEBUG: _current_model_id = {model_id}")
-
-                # 如果没有指定模型，尝试从下拉框获取
-                if not model_id:
-                    model_id = getattr(self, 'model_dropdown', None)
-                    if model_id is not None:
-                        model_id = model_id.value
-                    self.terminal.add_log(f"DEBUG: 从 model_dropdown 获取 model_id = {model_id}")
-
-                # 如果仍然没有模型，根据当前页面选择对应类型的模型
-                if not model_id:
-                    # 根据当前页面确定模型类型
-                    if self._current_view_index == 0:  # Custom Voice
-                        model_type = "customvoice"
-                    elif self._current_view_index == 1:  # Voice Design
-                        model_type = "voicedesign"
-                    elif self._current_view_index == 2:  # Voice Clone
-                        model_type = "base"
-                    else:
-                        model_type = None
-
-                    if model_type:
-                        usable_models = self.model_manager.list_usable_models_by_type(model_type)
-                        self.terminal.add_log(f"DEBUG: 当前页面需要 {model_type} 类型模型")
-                    else:
-                        usable_models = self.model_manager.list_usable_models()
-
-                    self.terminal.add_log(f"DEBUG: 可用模型列表 ({model_type or 'all'}) = {usable_models}")
-
-                    if not usable_models:
-                        # 没有可用的模型
-                        self.terminal.add_log("✗ 没有可用的 TTS 模型，请先在「模型管理」中下载模型")
-
-                        # 检查是否有已安装但不可用的模型
-                        installed = self.model_manager.get_installed_models()
-                        if installed:
-                            self.terminal.add_log("提示: 已安装的模型缺少依赖，请重新下载")
-
-                        raise RuntimeError("没有可用的 TTS 模型")
-
-                    model_id = usable_models[0]
-                    self.terminal.add_log(f"DEBUG: 使用第一个可用模型 = {model_id}")
-
-                model_path = self.model_manager.get_model_path(model_id)
-
-                if not model_path:
-                    raise RuntimeError(f"模型路径无效: {model_id}")
-
-                device = self.config_manager.get("model.device", "cuda:0")
-                dtype = self.config_manager.get("model.dtype", None)
-                attn_implementation = self.config_manager.get("model.attn_implementation", None)
-
-                model_info = self.model_manager.get_model_info(model_id)
-                self.terminal.add_log(f"使用模型: {model_info.name if model_info else model_id}")
-                self.terminal.add_log(f"模型ID: {model_id}")
-                self.terminal.add_log(f"模型路径: {model_path}")
-                self.terminal.add_log(f"设备: {device}")
-
-                # 准备共享 tokenizer 路径
-                # tokenizer 应该在 models_dir/tokenizer-12hz
-                tokenizer_path = self.model_manager.models_dir / "tokenizer-12hz"
-                shared_tokenizer_path = str(tokenizer_path) if tokenizer_path.exists() else None
-
-                if shared_tokenizer_path:
-                    self.terminal.add_log(f"使用共享 tokenizer: {shared_tokenizer_path}")
-                else:
-                    self.terminal.add_log("未找到共享 tokenizer，将使用模型内置 tokenizer")
-
-                # 根据模型ID确定模型类型
-                if "customvoice" in model_id:
-                    model_type = "CustomVoice"
-                elif "voicedesign" in model_id:
-                    model_type = "VoiceDesign"
-                elif "base" in model_id:
-                    model_type = "Base"
-                else:
-                    model_type = None  # 默认类型
-
-                self._tts_engine = QwenEngine(
-                    model_path=str(model_path),
-                    model_type=model_type,
-                    device=device,
-                    dtype=dtype,
-                    attn_implementation=attn_implementation,
-                    shared_tokenizer_path=shared_tokenizer_path,
-                    enable_streaming=True,  # 显式启用流式输出
-                    streaming_decode_window=80  # 流式解码窗口大小
-                )
-
-                self.terminal.add_log("✓ TTS 引擎初始化完成")
-
+                self.terminal.add_log("正在初始化 TTS 引擎...")
+                model_id = self._get_model_id()
+                self._tts_engine = await self._load_model_async(model_id)
+                # 标记加载完成
+                self._engine_loading_event.set()
             except Exception as e:
                 self.terminal.add_log(f"✗ TTS 引擎初始化失败: {str(e)}")
+                # 即使失败也要设置事件，避免无限等待
+                self._engine_loading_event.set()
                 raise
 
+        # 等待加载完成（如果其他协程正在加载）
+        await self._engine_loading_event.wait()
+
+        return self._tts_engine
+
+    async def _get_tts_engine_for_view(self) -> SafeTTSEngineProxy:
+        """
+        为视图提供的异步 TTS 引擎获取方法
+
+        Returns:
+            SafeTTSEngineProxy: TTS 引擎代理
+        """
+        return await self.get_tts_engine()
+
+    @property
+    def tts_engine(self):  # 同步访问器
+        """
+        懒加载：TTS 引擎（返回安全代理）
+
+        注意：如果引擎未加载，返回 None 而不是等待加载
+        推荐使用 get_tts_engine() 异步方法
+        """
         return self._tts_engine
 
     @property
@@ -346,7 +462,7 @@ class PhantomUI:
         if self.custom_voice_view is None:
             self.custom_voice_view = CustomVoiceView(
                 page=self.page,
-                tts_engine_getter=lambda: self.tts_engine,
+                tts_engine_getter=self._get_tts_engine_for_view,
                 audio_manager_getter=lambda: self.audio_manager,
                 terminal=self.terminal,
                 voice_library=self.voice_library,
@@ -361,7 +477,7 @@ class PhantomUI:
         if self.voice_design_view is None:
             self.voice_design_view = VoiceDesignView(
                 page=self.page,
-                tts_engine_getter=lambda: self.tts_engine,
+                tts_engine_getter=self._get_tts_engine_for_view,
                 audio_manager_getter=lambda: self.audio_manager,
                 terminal=self.terminal,
                 voice_library=self.voice_library,
@@ -376,7 +492,7 @@ class PhantomUI:
         if self.voice_clone_view is None:
             self.voice_clone_view = VoiceCloneView(
                 page=self.page,
-                tts_engine_getter=lambda: self.tts_engine,
+                tts_engine_getter=self._get_tts_engine_for_view,
                 audio_manager_getter=lambda: self.audio_manager,
                 terminal=self.terminal,
                 voice_library=self.voice_library,
@@ -422,7 +538,7 @@ class PhantomUI:
         if self.tts_service_view is None:
             self.tts_service_view = TTSServiceView(
                 page=self.page,
-                tts_engine_getter=lambda: self.tts_engine,
+                tts_engine_getter=self._get_tts_engine_for_view,
                 terminal=self.terminal,
                 config_manager=self.config_manager,
                 on_service_state_change=self._on_service_state_change
@@ -445,11 +561,27 @@ class PhantomUI:
         if self._tts_engine is not None:
             # 先卸载旧模型以释放资源
             self.terminal.add_log("设置已更改，正在卸载旧模型...")
-            self._tts_engine.unload()
 
-            # 然后清除引擎引用
-            self._tts_engine = None
-            self.terminal.add_log("TTS 引擎将重新初始化")
+            # 通过任务引擎提交卸载任务
+            async def unload_and_clear():
+                await self.task_engine.submit(
+                    task_type=TaskType.UNLOAD,
+                    func=self._do_unload_engine,
+                    description="设置更改后卸载 TTS 引擎",
+                    priority=10
+                )
+                self.terminal.add_log("TTS 引擎将重新初始化")
+
+            # 在后台执行卸载（带错误处理）
+            def handle_unload_error(e):
+                self.terminal.add_log(f"❌ 卸载引擎失败: {str(e)}")
+                self.terminal.add_log("将尝试继续使用当前模型")
+
+            create_task_with_error_handling(
+                unload_and_clear(),
+                task_name="SettingsChangeUnload",
+                on_error=handle_unload_error
+            )
 
     def _clear_tts_engine_cache(self, model_id: str = None):
         """清除 TTS 引擎缓存以强制重新初始化
@@ -468,15 +600,39 @@ class PhantomUI:
             self._sync_model_dropdowns(model_id)
 
         if self._tts_engine is not None:
-            # 先卸载旧模型以释放显存/内存
-            self.terminal.add_log("正在卸载旧模型...")
-            self._tts_engine.unload()
+            # 通过任务引擎提交卸载任务，确保不会在推理时卸载
+            async def unload_task():
+                self.terminal.add_log("正在卸载旧模型（任务队列）...")
 
-            # 然后清除引擎引用
-            self._tts_engine = None
-            self.terminal.add_log("TTS 引擎缓存已清除，将使用新选择的模型")
+                # 等待当前推理完成（通过任务引擎保证）
+                await self.task_engine.submit(
+                    task_type=TaskType.UNLOAD,
+                    func=self._do_unload_engine,
+                    description="卸载 TTS 引擎",
+                    priority=10  # 卸载任务优先级较高，但仍需等待当前任务完成
+                )
+
+            # 在后台执行卸载（带错误处理）
+            def handle_unload_error(e):
+                self.terminal.add_log(f"❌ 卸载引擎失败: {str(e)}")
+                self.terminal.add_log("可能需要重启应用以清理资源")
+
+            create_task_with_error_handling(
+                unload_task(),
+                task_name="ModelSwitchUnload",
+                on_error=handle_unload_error
+            )
         else:
             self.terminal.add_log("TTS 引擎未初始化，无需清除缓存")
+
+    def _do_unload_engine(self):
+        """实际执行卸载的函数（在任务引擎中执行）"""
+        if self._tts_engine is not None:
+            self.terminal.add_log("正在执行模型卸载...")
+            self._tts_engine.unload()
+            self._tts_engine = None
+            self._engine_loading_event.clear()  # 重置加载事件，允许下次重新加载
+            self.terminal.add_log("✓ TTS 引擎已卸载")
 
     def _sync_model_dropdowns(self, model_id: str):
         """同步所有视图的模型下拉框选择

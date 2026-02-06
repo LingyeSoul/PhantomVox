@@ -44,9 +44,9 @@ class ConfigManager:
                 "model": {
                     "model_name": "Qwen2-Audio",  # 默认模型
                     "model_path": "",  # 自定义模型路径（可选）
-                    "device": "cuda:0",  # 运行设备: cpu, cuda, cuda:0 等
-                    "dtype": "bfloat16",  # 数据类型: None=自动, bfloat16, float16, float32
-                    "attn_implementation": "flash_attention_2",  # 注意力实现: None=自动, flash_attention_2, sdpa
+                    "device": "auto",  # 运行设备: auto, cpu, cuda, cuda:0 等（auto 自动检测最佳设备）
+                    "dtype": "bfloat16",  # 数据类型: bfloat16, float16, float32
+                    "attn_implementation": "sdpa",  # 注意力实现: sdpa, flash_attention_2
                     "sample_rate": 24000,
                     "auto_download": True  # 自动下载缺失的模型
                 },

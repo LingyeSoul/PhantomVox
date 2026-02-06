@@ -436,8 +436,8 @@ class VoiceDesignView(ft.Container):
             pass
 
         try:
-            # 获取TTS引擎
-            tts_engine = self.tts_engine_getter()
+            # 获取TTS引擎（异步）
+            tts_engine = await self.tts_engine_getter()
 
             # 生成语音
             self.terminal.add_log(f"声音描述: {design_prompt[:50]}...")

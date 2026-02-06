@@ -30,3 +30,5 @@ AGENTS.md
 /python-3.12.9-embed
 update.py
 \!整合包使用说明.txt
+/tests
+pytest.ini

@@ -28,9 +28,22 @@ async def lifespan(app: FastAPI):
     """
     # 启动阶段
     logger.info("FastAPI TTS Server starting up...")
+
+    # 启动任务引擎
+    from core.task_engine import get_task_engine
+    task_engine = get_task_engine()
+    await task_engine.start()
+    logger.info("Task engine started for API server")
+
     yield
+
     # 关闭阶段
     logger.info("FastAPI TTS Server shutting down...")
+
+    # 停止任务引擎
+    await task_engine.stop()
+    logger.info("Task engine stopped")
+
     cleanup_dependencies()
 
 

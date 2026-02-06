@@ -123,6 +123,68 @@ class SettingsView(ft.Container):
 
     # ========== Tab 构建方法 ==========
 
+    def _get_available_device_options(self):
+        """动态获取可用的设备选项"""
+        try:
+            import torch
+
+            # 第一个选项始终是 "auto"（自动检测）
+            options = [
+                ft.dropdown.Option("auto", "自动检测（推荐）"),
+                ft.dropdown.Option("cpu", "CPU"),
+            ]
+
+            # 检查 CUDA 是否可用
+            if torch.cuda.is_available():
+                cuda_device_count = torch.cuda.device_count()
+                logger.info(f"检测到 {cuda_device_count} 个 CUDA 设备")
+
+                # 添加通用 CUDA 选项
+                options.append(ft.dropdown.Option("cuda", f"CUDA (通用)"))
+
+                # 添加每个具体的 CUDA 设备
+                for i in range(cuda_device_count):
+                    device_name = torch.cuda.get_device_name(i)
+                    # 限制设备名称长度，避免太长
+                    if len(device_name) > 30:
+                        device_name = device_name[:27] + "..."
+                    options.append(
+                        ft.dropdown.Option(f"cuda:{i}", f"CUDA:{i} ({device_name})")
+                    )
+            else:
+                logger.info("未检测到 CUDA 设备")
+                # 即使没有 CUDA，也保留通用选项供用户选择
+                options.append(ft.dropdown.Option("cuda", "CUDA (如果可用)"))
+
+            return options
+
+        except Exception as e:
+            logger.warning(f"检测设备失败: {str(e)}", exc_info=True)
+            # 向用户显示警告
+            self._show_error(f"⚠️ 设备检测失败: {str(e)}")
+            # 如果检测失败，返回基本选项（不包含 CUDA，因为检测失败了）
+            return [
+                ft.dropdown.Option("auto", "自动检测（推荐）"),
+                ft.dropdown.Option("cpu", "CPU"),
+            ]
+
+    def _validate_device_value(self, device_value):
+        """验证设备值是否有效，如果不有效则返回默认值"""
+        # 获取当前可用的设备选项
+        available_devices = [opt.key for opt in self.device_dropdown.options]
+
+        # 如果配置的设备不在可用列表中，使用默认值
+        if device_value not in available_devices:
+            # 优先使用 auto，如果不可用则使用 cpu
+            if "auto" in available_devices:
+                device_value = "auto"
+                logger.info(f"配置的设备不可用，使用自动检测: {device_value}")
+            else:
+                device_value = "cpu"
+                logger.info(f"使用 CPU")
+
+        return device_value
+
     def _build_interface_tab(self) -> ft.Control:
         """构建界面设置 Tab"""
         # 主题模式开关
@@ -156,60 +218,55 @@ class SettingsView(ft.Container):
 
     def _build_model_tab(self) -> ft.Control:
         """构建模型设置 Tab"""
+        # 动态检测可用设备
+        device_options = self._get_available_device_options()
+
         # 设备选择
         self.device_dropdown = ft.Dropdown(
             label="运行设备",
-            options=[
-                ft.dropdown.Option("auto", "自动检测"),
-                ft.dropdown.Option("cpu", "CPU"),
-                ft.dropdown.Option("cuda", "CUDA (默认)"),
-                ft.dropdown.Option("cuda:0", "CUDA:0"),
-                ft.dropdown.Option("cuda:1", "CUDA:1"),
-            ],
+            options=device_options,
             width=300,
-            text_style=ft.TextStyle(font_family="Microsoft YaHei")
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            on_select=self._on_device_changed
         )
-        self.device_dropdown.on_change = lambda e: self._on_setting_changed("model.device", e.control.value)
 
         # 数据类型
         self.dtype_dropdown = ft.Dropdown(
             label="数据类型",
             options=[
-                ft.dropdown.Option(None, "自动"),
-                ft.dropdown.Option("float32", "Float32"),
-                ft.dropdown.Option("float16", "Float16"),
                 ft.dropdown.Option("bfloat16", "BFloat16"),
+                ft.dropdown.Option("float16", "Float16"),
+                ft.dropdown.Option("float32", "Float32"),
             ],
             width=300,
-            text_style=ft.TextStyle(font_family="Microsoft YaHei")
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            on_select=self._on_dtype_changed
         )
-        self.dtype_dropdown.on_change = lambda e: self._on_setting_changed("model.dtype", e.control.value)
 
         # 注意力实现
         self.attn_dropdown = ft.Dropdown(
             label="注意力实现",
             options=[
-                ft.dropdown.Option(None, "自动"),
                 ft.dropdown.Option("sdpa", "SDPA"),
                 ft.dropdown.Option("flash_attention_2", "Flash Attention 2"),
             ],
             width=300,
-            text_style=ft.TextStyle(font_family="Microsoft YaHei")
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            on_select=self._on_attn_changed
         )
-        self.attn_dropdown.on_change = lambda e: self._on_setting_changed("model.attn_implementation", e.control.value)
 
-        # 采样率
+        # 采样率（固定值，由模型决定）
         self.sample_rate_dropdown = ft.Dropdown(
-            label="采样率",
+            label="采样率（模型固定）",
             options=[
-                ft.dropdown.Option(16000, "16000 Hz"),
-                ft.dropdown.Option(24000, "24000 Hz (默认)"),
-                ft.dropdown.Option(48000, "48000 Hz"),
+                ft.dropdown.Option(24000, "24000 Hz"),
             ],
             width=300,
-            text_style=ft.TextStyle(font_family="Microsoft YaHei")
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            value=24000,
+            disabled=True,
+            hint_text="采样率由模型决定，不可更改"
         )
-        self.sample_rate_dropdown.on_change = lambda e: self._on_setting_changed("model.sample_rate", int(e.control.value))
 
         # 自动下载模型
         self.auto_download_switch = ft.Switch(
@@ -225,7 +282,7 @@ class SettingsView(ft.Container):
             ft.Column([
                 ft.Text("运行设备", size=13),
                 self.device_dropdown,
-                ft.Text("选择模型运行设备，auto 会自动检测可用设备", size=11, color=ft.Colors.GREY_400),
+                ft.Text("选择模型运行设备。推荐使用「自动检测」让系统选择最佳设备", size=11, color=ft.Colors.GREY_400),
             ], spacing=5),
 
             ft.Container(height=15),
@@ -249,7 +306,7 @@ class SettingsView(ft.Container):
             ft.Column([
                 ft.Text("采样率", size=13),
                 self.sample_rate_dropdown,
-                ft.Text("音频输出采样率，越高音质越好但文件越大", size=11, color=ft.Colors.GREY_400),
+                ft.Text("qwen-tts 模型固定输出 24000Hz 采样率", size=11, color=ft.Colors.AMBER),
             ], spacing=5),
 
             ft.Container(height=15),
@@ -276,9 +333,9 @@ class SettingsView(ft.Container):
                 ft.dropdown.Option("ogg", "OGG (压缩)"),
             ],
             width=300,
-            text_style=ft.TextStyle(font_family="Microsoft YaHei")
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            on_select=self._on_format_changed
         )
-        self.format_dropdown.on_change = lambda e: self._on_setting_changed("audio.output_format", e.control.value)
 
         # 自动保存
         self.auto_save_switch = ft.Switch(
@@ -350,9 +407,9 @@ class SettingsView(ft.Container):
                 ft.dropdown.Option("ERROR", "ERROR (错误)"),
             ],
             width=300,
-            text_style=ft.TextStyle(font_family="Microsoft YaHei")
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            on_select=self._on_log_level_changed
         )
-        self.log_level_dropdown.on_change = lambda e: self._on_setting_changed("logging.level", e.control.value)
 
         # 保存日志
         self.save_logs_switch = ft.Switch(
@@ -432,10 +489,20 @@ class SettingsView(ft.Container):
             self.theme_switch.value = (theme_mode == "dark")
 
             # 模型设置
-            self.device_dropdown.value = self._config_manager.get("model.device", "cuda:0")
-            self.dtype_dropdown.value = self._config_manager.get("model.dtype", "bfloat16")
-            self.attn_dropdown.value = self._config_manager.get("model.attn_implementation", "flash_attention_2")
-            self.sample_rate_dropdown.value = self._config_manager.get("model.sample_rate", 24000)
+            device_value = self._config_manager.get("model.device", "auto")
+            dtype_value = self._config_manager.get("model.dtype", "bfloat16")
+            attn_value = self._config_manager.get("model.attn_implementation", "sdpa")
+
+            logger.info(f"加载模型设置: device={device_value}, dtype={dtype_value}, attn={attn_value}")
+
+            # 验证设备值是否有效，处理 "auto" 等旧选项
+            device_value = self._validate_device_value(device_value)
+
+            self.device_dropdown.value = device_value
+            self.dtype_dropdown.value = dtype_value
+            self.attn_dropdown.value = attn_value
+            # 采样率固定为 24000Hz，由模型决定，不从配置读取
+            # self.sample_rate_dropdown.value = self._config_manager.get("model.sample_rate", 24000)
             self.auto_download_switch.value = self._config_manager.get("model.auto_download", True)
 
             # 音频设置
@@ -463,6 +530,26 @@ class SettingsView(ft.Container):
             self._show_error(f"加载配置失败: {str(e)}")
 
     # ========== 事件处理 ==========
+
+    def _on_device_changed(self, e):
+        """设备选择变更事件"""
+        self._on_setting_changed("model.device", e.control.value)
+
+    def _on_dtype_changed(self, e):
+        """数据类型变更事件"""
+        self._on_setting_changed("model.dtype", e.control.value)
+
+    def _on_attn_changed(self, e):
+        """注意力实现变更事件"""
+        self._on_setting_changed("model.attn_implementation", e.control.value)
+
+    def _on_format_changed(self, e):
+        """输出格式变更事件"""
+        self._on_setting_changed("audio.output_format", e.control.value)
+
+    def _on_log_level_changed(self, e):
+        """日志级别变更事件"""
+        self._on_setting_changed("logging.level", e.control.value)
 
     def _on_theme_change(self, e):
         """主题切换事件 - 实时预览"""
@@ -498,6 +585,7 @@ class SettingsView(ft.Container):
 
         # 跟踪更改
         self._unsaved_changes[key] = value
+        logger.info(f"设置已变更: {key} = {value}, 未保存更改数: {len(self._unsaved_changes)}")
         self._update_save_button_state()
 
     def _on_save_click(self, e):
@@ -507,6 +595,9 @@ class SettingsView(ft.Container):
             return
 
         try:
+            # 检查是否有模型相关的设置变更
+            model_settings_changed = any(key.startswith("model.") for key in self._unsaved_changes.keys())
+
             # 应用所有更改
             for key, value in self._unsaved_changes.items():
                 self._config_manager.set(key, value)
@@ -519,7 +610,10 @@ class SettingsView(ft.Container):
             self._update_save_button_state()
 
             # 显示成功消息
-            self._show_message("✓ 设置已保存", ft.Colors.GREEN)
+            if model_settings_changed:
+                self._show_message("✓ 设置已保存。模型相关设置将在下次生成语音时生效", ft.Colors.GREEN)
+            else:
+                self._show_message("✓ 设置已保存", ft.Colors.GREEN)
 
             # 通知回调
             if self._on_settings_changed:
