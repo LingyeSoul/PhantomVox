@@ -14,6 +14,13 @@ from typing import List, Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+# 常量定义
+DEFAULT_NAME_MAX_LENGTH = 15  # 默认名称最大长度（字符）
+DEFAULT_DESCRIPTION_MAX_LENGTH = 10  # 默认描述最大长度（字符）
+MAX_FAVORITES = 50  # 收藏最大数量
+MAX_NAME_LENGTH = 100  # 收藏名称最大长度（字符）
+MAX_CONTENT_LENGTH = 5000  # 收藏内容最大长度（字符）
+
 
 class VocalDataManager:
     """语音数据文件系统管理器"""
@@ -320,12 +327,12 @@ class VocalDataManager:
 
     # ========== 情感指令收藏管理 ==========
 
-    def save_favorite_instructs(self, instructs: List[str]) -> bool:
+    def save_favorite_instructs(self, instructs: List[dict]) -> bool:
         """
         保存收藏的情感指令
 
         Args:
-            instructs: 指令列表
+            instructs: 指令列表 [{"name": str, "instruct": str}, ...]
 
         Returns:
             bool: 是否成功
@@ -338,12 +345,12 @@ class VocalDataManager:
             logger.error(f"保存收藏情感指令失败: {e}")
             return False
 
-    def load_favorite_instructs(self) -> List[str]:
+    def load_favorite_instructs(self) -> List[dict]:
         """
         加载收藏的情感指令（自动迁移旧数据）
 
         Returns:
-            list: 指令列表
+            list: 指令列表 [{"name": str, "instruct": str}, ...]
         """
         file_path = self.instructs_dir / "favorite_instructs.json"
 
@@ -351,7 +358,11 @@ class VocalDataManager:
         if file_path.exists():
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                # 如果是旧格式（字符串列表），需要迁移
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], str):
+                    return self._migrate_favorite_instructs(data)
+                return data
             except Exception as e:
                 logger.error(f"加载收藏情感指令失败: {e}")
 
@@ -363,15 +374,76 @@ class VocalDataManager:
                 with open(old_file_path, "r", encoding="utf-8") as f:
                     old_instructs = json.load(f)
 
+                # 迁移到新格式
+                new_data = self._migrate_favorite_instructs(old_instructs)
+
                 # 保存到新文件
-                if self.save_favorite_instructs(old_instructs):
-                    logger.info(f"✓ 已迁移 {len(old_instructs)} 条情感指令到 favorite_instructs.json")
+                if self.save_favorite_instructs(new_data):
+                    logger.info(f"✓ 已迁移 {len(old_instructs)} 条情感指令到新格式")
                     # 备份旧文件（重命名为 .bak）
                     backup_path = self.instructs_dir / "recent_instructs.json.bak"
                     old_file_path.rename(backup_path)
                     logger.info(f"✓ 旧文件已备份为: {backup_path.name}")
-                    return old_instructs
+                    return new_data
             except Exception as e:
                 logger.error(f"迁移情感指令失败: {e}")
+
+        return []
+
+    def _migrate_favorite_instructs(self, old_instructs: List[str]) -> List[dict]:
+        """
+        将旧格式（字符串列表）迁移到新格式（字典列表）
+
+        Args:
+            old_instructs: 旧格式的指令列表
+
+        Returns:
+            新格式的指令列表
+        """
+        new_data = []
+        for instruct in old_instructs:
+            # 使用前 N 个字符作为默认名称
+            name = instruct[:DEFAULT_NAME_MAX_LENGTH] + "..." if len(instruct) > DEFAULT_NAME_MAX_LENGTH else instruct
+            new_data.append({
+                "name": name,
+                "instruct": instruct
+            })
+        return new_data
+
+    # ========== 设计描述收藏管理 ==========
+
+    def save_favorite_designs(self, designs: List[dict]) -> bool:
+        """
+        保存收藏的设计描述
+
+        Args:
+            designs: 设计列表 [{"name": str, "description": str}, ...]
+
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            with open(self.designs_dir / "favorite_designs.json", "w", encoding="utf-8") as f:
+                json.dump(designs, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            logger.error(f"保存收藏设计失败: {e}")
+            return False
+
+    def load_favorite_designs(self) -> List[dict]:
+        """
+        加载收藏的设计描述
+
+        Returns:
+            list: 设计列表 [{"name": str, "description": str}, ...]
+        """
+        file_path = self.designs_dir / "favorite_designs.json"
+
+        if file_path.exists():
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"加载收藏设计失败: {e}")
 
         return []

@@ -15,6 +15,11 @@ from tts.audio_temp_manager import AudioTempManager
 
 logger = logging.getLogger(__name__)
 
+# 收藏相关常量
+DEFAULT_DESCRIPTION_MAX_LENGTH = 10
+MAX_NAME_LENGTH = 100
+MAX_CONTENT_LENGTH = 5000
+
 
 class VoiceDesignView(ft.Container):
     """声音设计页面"""
@@ -101,29 +106,25 @@ class VoiceDesignView(ft.Container):
                                   "正太少年", "知性御姐", "沉稳长者"]
 
             card = ft.Container(
-                content=ft.Column([
-                    ft.Text(name, size=13, weight=ft.FontWeight.BOLD),
-                    ft.Text(
-                        desc[:30] + "..." if len(desc) > 30 else desc,
-                        size=11
-                    ),
-                ], spacing=5),
-                padding=10,
+                content=ft.Text(name, size=12, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+                padding=8,
                 bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.ON_SURFACE),
                 border_radius=8,
-                width=150,
-                height=80,
-                on_click=lambda e, n=name, d=desc: self._on_preset_click(e, n, d),
+                width=100,
+                on_click=lambda _, n=name, d=desc: self._on_preset_click(_, n, d),
                 tooltip=desc
             )
             preset_cards.append(card)
 
-        # 我的收藏 (Chips)
+        # 我的收藏 (Chips，支持滚动)
         self.fav_chips = ft.Row(
             [ft.Text("暂无收藏", size=12)],
             spacing=5,
-            wrap=True
+            wrap=False,
+            scroll=ft.ScrollMode.AUTO,
+            height=40
         )
+        self._refresh_favorites()  # 初始化时加载收藏
 
         # 设计历史
         self.history_list = ft.ListView(
@@ -183,7 +184,7 @@ class VoiceDesignView(ft.Container):
                         ft.Text("预设声音 📚", size=14, weight=ft.FontWeight.BOLD),
                         ft.GridView(
                             runs_count=2,
-                            max_extent=160,
+                            max_extent=50,
                             spacing=10,
                             run_spacing=10,
                             controls=preset_cards
@@ -285,7 +286,7 @@ class VoiceDesignView(ft.Container):
             expand=True
         )
 
-    def _on_model_changed(self, _):
+    def _on_model_changed(self, e):
         """模型选择改变事件"""
         if self.on_clear_engine_cache:
             self.on_clear_engine_cache(self.model_dropdown.value)
@@ -331,14 +332,14 @@ class VoiceDesignView(ft.Container):
         self.char_count.value = f"字符数: {char_count} / 推荐 30-80"
         self.char_count.update()
 
-    def _on_preset_click(self, e, name: str, desc: str):
+    def _on_preset_click(self, _, name: str, desc: str):
         """预设声音卡片点击事件"""
         self.design_input.value = desc
         self.design_input.update()
         self._on_design_change(None)
         self.terminal.add_log(f"已选择预设: {name}")
 
-    def _on_save_favorite(self, e):
+    def _on_save_favorite(self, _):
         """保存当前描述为收藏"""
         desc = self.design_input.value or ""
         if not desc or not desc.strip():
@@ -348,23 +349,237 @@ class VoiceDesignView(ft.Container):
             ))
             return
 
-        # 生成收藏名称（使用描述的前10个字符）
-        name = desc.strip()[:10] + ("..." if len(desc) > 10 else "")
+        # 生成默认名称（使用描述的前N个字符）
+        default_name = desc.strip()[:DEFAULT_DESCRIPTION_MAX_LENGTH] + ("..." if len(desc) > DEFAULT_DESCRIPTION_MAX_LENGTH else "")
 
-        # 保存到声音库
-        success = self.voice_library.add_design_preset(name, desc)
+        # 创建名称输入框
+        name_input = ft.TextField(
+            label="收藏名称",
+            value=default_name,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            autofocus=True
+        )
 
-        if success:
-            self._page.show_dialog(ft.SnackBar(
-                ft.Text(f"已收藏: {name}"),
-                bgcolor=ft.Colors.GREEN
-            ))
-            self.terminal.add_log(f"已保存收藏: {name}")
+        # 显示对话框
+        def save_dialog(_):
+            name = name_input.value.strip() or default_name
+
+            # 输入验证
+            if len(name) > 100:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"名称过长（最多100字符，当前{len(name)}字符）"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            if len(desc) > 5000:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"内容过长（最多5000字符，当前{len(desc)}字符）"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            # 检查名称唯一性
+            existing_names = [f["name"] for f in self.voice_library.get_favorite_designs()]
+            if name in existing_names:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"收藏名称 \"{name}\" 已存在，请使用其他名称"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            success = self.voice_library.add_favorite_design(name, desc)
+
+            if success:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"已收藏: {name}"),
+                    bgcolor=ft.Colors.GREEN
+                ))
+                self.terminal.add_log(f"已保存收藏: {name}")
+                self._refresh_favorites()  # 刷新收藏显示
+            else:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("保存失败或已存在"),
+                    bgcolor=ft.Colors.RED
+                ))
+            dialog.open = False
+            self._page.update()
+
+        def close_dialog(_):
+            dialog.open = False
+            self._page.update()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("保存收藏", weight=ft.FontWeight.BOLD),
+            content=name_input,
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.TextButton("保存", on_click=save_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+
+        self._page.show_dialog(dialog)
+
+    def _refresh_favorites(self):
+        """刷新收藏列表"""
+        favorites = self.voice_library.get_favorite_designs()
+
+        if not favorites:
+            self.fav_chips.controls = [ft.Text("暂无收藏", size=12)]
         else:
-            self._page.show_dialog(ft.SnackBar(
-                ft.Text("保存失败"),
-                bgcolor=ft.Colors.RED
-            ))
+            self.fav_chips.controls.clear()
+            for fav in favorites:
+                # 创建带右键菜单的 Chip
+                menu_button = ft.PopupMenuButton(
+                    icon=ft.Icons.MORE_VERT,
+                    items=[
+                        ft.PopupMenuItem(
+                            content=ft.Text("编辑名称"),
+                            icon=ft.Icons.EDIT,
+                            on_click=lambda _, f=fav: self._on_edit_favorite_name(_, f)
+                        ),
+                        ft.PopupMenuItem(
+                            content=ft.Text("删除"),
+                            icon=ft.Icons.DELETE,
+                            on_click=lambda _, f=fav: self._on_delete_favorite(_, f)
+                        ),
+                    ]
+                )
+
+                chip_row = ft.Row([
+                    ft.Chip(
+                        label=ft.Text(fav["name"], size=11),
+                        bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.ON_SURFACE),
+                        on_click=lambda _, d=fav["description"]: self._on_favorite_click(_, d),
+                    ),
+                    menu_button
+                ], spacing=5)
+
+                self.fav_chips.controls.append(chip_row)
+
+        # 只有在控件已添加到页面时才调用 update()
+        try:
+            self.fav_chips.update()
+        except RuntimeError:
+            pass
+
+    def _on_favorite_click(self, _, desc: str):
+        """收藏项点击事件"""
+        self.design_input.value = desc
+        self.design_input.update()
+        self._on_design_change(None)
+        self.terminal.add_log("已加载收藏的设计")
+
+    def _on_edit_favorite_name(self, _, fav: dict):
+        """编辑收藏"""
+        old_name = fav["name"]
+        old_desc = fav["description"]
+
+        # 创建输入框
+        name_input = ft.TextField(
+            label="收藏名称",
+            value=old_name,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+        )
+
+        desc_input = ft.TextField(
+            label="声音描述",
+            value=old_desc,
+            multiline=True,
+            min_lines=3,
+            max_lines=5,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            autofocus=True
+        )
+
+        # 显示对话框
+        def save_dialog(_):
+            new_name = name_input.value.strip()
+            new_desc = desc_input.value.strip()
+
+            if not new_name or not new_desc:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("名称和描述不能为空"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            success = self.voice_library.update_favorite_design(old_desc, new_name, new_desc)
+
+            if success:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("已修改"),
+                    bgcolor=ft.Colors.GREEN
+                ))
+                self._refresh_favorites()
+                # 如果当前输入框是旧描述，更新它
+                if self.design_input.value == old_desc:
+                    self.design_input.value = new_desc
+                    self.design_input.update()
+                    self._on_design_change(None)
+            else:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("修改失败"),
+                    bgcolor=ft.Colors.RED
+                ))
+
+            dialog.open = False
+            self._page.update()
+
+        def close_dialog(_):
+            dialog.open = False
+            self._page.update()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("编辑收藏", weight=ft.FontWeight.BOLD),
+            content=ft.Column([name_input, desc_input], spacing=10, tight=True),
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.TextButton("保存", on_click=save_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+
+        self._page.show_dialog(dialog)
+
+    def _on_delete_favorite(self, _, fav: dict):
+        """删除收藏"""
+        desc = fav["description"]
+        name = fav["name"]
+
+        # 确认对话框
+        def confirm_delete(_):
+            success = self.voice_library.remove_favorite_design(desc)
+            if success:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"已删除: {name}"),
+                    bgcolor=ft.Colors.GREEN
+                ))
+                self._refresh_favorites()
+            else:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("删除失败"),
+                    bgcolor=ft.Colors.RED
+                ))
+            confirm_dialog.open = False
+            self._page.update()
+
+        def close_dialog(_):
+            confirm_dialog.open = False
+            self._page.update()
+
+        confirm_dialog = ft.AlertDialog(
+            title=ft.Text("确认删除", weight=ft.FontWeight.BOLD),
+            content=ft.Text(f"确定要删除收藏 \"{name}\" 吗？"),
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.TextButton("删除", on_click=confirm_delete),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+
+        self._page.show_dialog(confirm_dialog)
 
     def _refresh_history(self):
         """刷新设计历史"""
@@ -381,7 +596,7 @@ class VoiceDesignView(ft.Container):
                     ft.Text(desc, size=11, expand=True),
                 ], spacing=5),
                 padding=5,
-                on_click=lambda e, d=item["description"]: self._on_history_click(e, d),
+                on_click=lambda _, d=item["description"]: self._on_history_click(_, d),
                 tooltip=item["description"]
             )
             self.history_list.controls.append(control)
@@ -392,14 +607,14 @@ class VoiceDesignView(ft.Container):
         except RuntimeError:
             pass
 
-    def _on_history_click(self, e, desc: str):
+    def _on_history_click(self, _, desc: str):
         """历史记录点击事件"""
         self.design_input.value = desc
         self.design_input.update()
         self._on_design_change(None)
         self.terminal.add_log("已加载历史设计")
 
-    def _on_clear_text(self, e):
+    def _on_clear_text(self, _):
         """清空文本"""
         self.text_panel.clear()
 

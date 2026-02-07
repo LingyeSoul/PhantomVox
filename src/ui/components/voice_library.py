@@ -18,6 +18,10 @@ from tts.prompt_serializer import save_prompt_features
 
 logger = logging.getLogger(__name__)
 
+# 收藏相关常量
+MAX_FAVORITES = 50  # 收藏最大数量
+MAX_DESIGN_HISTORY = 50  # 设计历史最大数量
+
 # Voice Design 内置预设
 VOICE_DESIGN_PRESETS = {
     "温柔女声": "体现温柔细腻的女性声音，音调柔和，语速舒缓，营造出温暖、亲切的听觉效果。",
@@ -51,6 +55,154 @@ SUPPORTED_LANGUAGES = {
 }
 
 
+class FavoriteManager:
+    """通用收藏管理器 - 消除重复代码"""
+
+    def __init__(self, vocal_manager, content_key: str, save_method, load_method,
+                 item_type_name: str = "item", max_items: int = MAX_FAVORITES):
+        """
+        初始化收藏管理器
+
+        Args:
+            vocal_manager: VocalDataManager 实例
+            content_key: 内容字段名 ("instruct" 或 "description")
+            save_method: 保存方法
+            load_method: 加载方法
+            item_type_name: 项目类型名称（用于日志）
+            max_items: 最大收藏数量
+        """
+        self.vocal_manager = vocal_manager
+        self.content_key = content_key
+        self.save_method = save_method
+        self.items = load_method()
+        self.item_type_name = item_type_name
+        self.max_items = max_items
+
+    def add(self, name: str, content: str) -> bool:
+        """
+        添加收藏
+
+        Args:
+            name: 名称
+            content: 内容
+
+        Returns:
+            是否成功保存
+        """
+        try:
+            if not content or not content.strip():
+                return False
+
+            content = content.strip()
+
+            # 去重：检查是否已存在相同内容
+            for item in self.items:
+                if item[self.content_key] == content:
+                    logger.debug(f"该{self.item_type_name}已收藏")
+                    return False
+
+            # 添加到列表前面
+            self.items.insert(0, {
+                "name": name,
+                self.content_key: content
+            })
+
+            # 限制数量
+            self.items = self.items[:self.max_items]
+
+            # 保存
+            self.save_method(self.items)
+            logger.info(f"添加收藏{self.item_type_name}: {name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"保存收藏{self.item_type_name}失败: {str(e)}")
+            return False
+
+    def update(self, old_content: str, new_name: str, new_content: str) -> bool:
+        """
+        更新收藏
+
+        Args:
+            old_content: 旧的内容（用于查找）
+            new_name: 新的名称
+            new_content: 新的内容
+
+        Returns:
+            是否成功更新
+        """
+        try:
+            # 查找并更新
+            for i, item in enumerate(self.items):
+                if item[self.content_key] == old_content:
+                    self.items[i] = {
+                        "name": new_name,
+                        self.content_key: new_content
+                    }
+                    # 保存
+                    self.save_method(self.items)
+                    logger.info(f"更新收藏{self.item_type_name}: {new_name}")
+                    return True
+            return False
+
+        except Exception as e:
+            logger.error(f"更新收藏{self.item_type_name}失败: {str(e)}")
+            return False
+
+    def remove(self, content: str) -> bool:
+        """
+        移除收藏
+
+        Args:
+            content: 内容
+
+        Returns:
+            是否成功移除
+        """
+        try:
+            original_length = len(self.items)
+            self.items = [
+                item for item in self.items
+                if item[self.content_key] != content
+            ]
+
+            if len(self.items) < original_length:
+                self.save_method(self.items)
+                logger.info(f"移除收藏{self.item_type_name}")
+                return True
+            return False
+
+        except Exception as e:
+            logger.error(f"移除收藏{self.item_type_name}失败: {str(e)}")
+            return False
+
+    def get_all(self, limit: int = None) -> List[dict]:
+        """
+        获取所有收藏
+
+        Args:
+            limit: 返回数量限制（None表示返回全部）
+
+        Returns:
+            收藏列表
+        """
+        if limit is None:
+            return self.items.copy()
+        return self.items[:limit]
+
+    def is_favorite(self, content: str) -> bool:
+        """
+        检查是否已收藏
+
+        Args:
+            content: 内容
+
+        Returns:
+            是否已收藏
+        """
+        return any(item[self.content_key] == content for item in self.items)
+
+
 class VoiceLibrary:
     """跨页面共享的声音库管理器"""
 
@@ -70,7 +222,28 @@ class VoiceLibrary:
         # 加载各类数据
         self.design_presets = self._load_design_presets()
         self.clone_library = self._load_clone_library()
-        self.favorite_instructs = self._load_favorite_instructs()
+
+        # 使用 FavoriteManager 管理收藏（消除重复代码）
+        self.instruct_manager = FavoriteManager(
+            self.vocal_manager,
+            content_key="instruct",
+            save_method=self.vocal_manager.save_favorite_instructs,
+            load_method=self.vocal_manager.load_favorite_instructs,
+            item_type_name="情感指令",
+            max_items=MAX_FAVORITES
+        )
+        self.design_manager = FavoriteManager(
+            self.vocal_manager,
+            content_key="description",
+            save_method=self.vocal_manager.save_favorite_designs,
+            load_method=self.vocal_manager.load_favorite_designs,
+            item_type_name="设计描述",
+            max_items=MAX_FAVORITES
+        )
+
+        # 保持向后兼容的属性访问
+        self.favorite_instructs = self.instruct_manager.items
+        self.favorite_designs = self.design_manager.items
 
         # 设计历史（仅内存存储，不持久化）
         self.design_history = []
@@ -199,8 +372,8 @@ class VoiceLibrary:
                 "timestamp": datetime.now().isoformat()
             })
 
-            # 限制数量（最多50条）
-            self.design_history = self.design_history[:50]
+            # 限制数量（最多N条）
+            self.design_history = self.design_history[:MAX_DESIGN_HISTORY]
 
             logger.debug(f"保存声音设计到内存历史: {name}")
             return True
@@ -492,51 +665,45 @@ class VoiceLibrary:
 
     # ========== Custom Voice 情感指令收藏管理 ==========
 
-    def _load_favorite_instructs(self) -> List[str]:
+    def _load_favorite_instructs(self) -> List[dict]:
         """
-        加载收藏的情感指令
-        """
-        # 从 vocal/instructs 加载
-        instructs = self.vocal_manager.load_favorite_instructs()
-        return instructs
+        加载收藏的情感指令（委托给 FavoriteManager）
 
-    def add_favorite_instruct(self, instruct: str) -> bool:
+        Returns:
+            List[dict]: 指令列表 [{"name": str, "instruct": str}, ...]
         """
-        添加收藏的情感指令
+        return self.instruct_manager.get_all()
+
+    def add_favorite_instruct(self, name: str, instruct: str) -> bool:
+        """
+        添加收藏的情感指令（委托给 FavoriteManager）
 
         Args:
+            name: 指令名称
             instruct: 情感指令文本
 
         Returns:
             是否成功保存
         """
-        try:
-            if not instruct or not instruct.strip():
-                return False
+        return self.instruct_manager.add(name, instruct)
 
-            instruct = instruct.strip()
+    def update_favorite_instruct(self, old_instruct: str, new_name: str, new_instruct: str) -> bool:
+        """
+        更新收藏的情感指令（委托给 FavoriteManager）
 
-            # 去重并添加到前面
-            if instruct in self.favorite_instructs:
-                self.favorite_instructs.remove(instruct)
-            self.favorite_instructs.insert(0, instruct)
+        Args:
+            old_instruct: 旧的指令内容（用于查找）
+            new_name: 新的名称
+            new_instruct: 新的指令内容
 
-            # 限制数量（最多50条）
-            self.favorite_instructs = self.favorite_instructs[:50]
-
-            # 保存到 vocal
-            self.vocal_manager.save_favorite_instructs(self.favorite_instructs)
-
-            logger.debug(f"添加收藏指令: {instruct[:30]}...")
-            return True
-
-        except Exception as e:
-            logger.error(f"保存收藏指令失败: {str(e)}")
-            return False
+        Returns:
+            是否成功更新
+        """
+        return self.instruct_manager.update(old_instruct, new_name, new_instruct)
 
     def remove_favorite_instruct(self, instruct: str) -> bool:
         """
-        移除收藏的情感指令
+        移除收藏的情感指令（委托给 FavoriteManager）
 
         Args:
             instruct: 情感指令文本
@@ -544,35 +711,26 @@ class VoiceLibrary:
         Returns:
             是否成功移除
         """
-        try:
-            if instruct in self.favorite_instructs:
-                self.favorite_instructs.remove(instruct)
-                # 保存到 vocal
-                self.vocal_manager.save_favorite_instructs(self.favorite_instructs)
-                logger.debug(f"移除收藏指令: {instruct[:30]}...")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"移除收藏指令失败: {str(e)}")
-            return False
+        result = self.instruct_manager.remove(instruct)
+        # 更新向后兼容的属性
+        self.favorite_instructs = self.instruct_manager.items
+        return result
 
-    def get_favorite_instructs(self, limit: int = None) -> List[str]:
+    def get_favorite_instructs(self, limit: int = None) -> List[dict]:
         """
-        获取收藏的情感指令
+        获取收藏的情感指令（委托给 FavoriteManager）
 
         Args:
             limit: 返回数量限制（None表示返回全部）
 
         Returns:
-            情感指令列表
+            指令列表 [{"name": str, "instruct": str}, ...]
         """
-        if limit is None:
-            return self.favorite_instructs.copy()
-        return self.favorite_instructs[:limit]
+        return self.instruct_manager.get_all(limit)
 
     def is_favorite_instruct(self, instruct: str) -> bool:
         """
-        检查情感指令是否已收藏
+        检查情感指令是否已收藏（委托给 FavoriteManager）
 
         Args:
             instruct: 情感指令文本
@@ -580,7 +738,74 @@ class VoiceLibrary:
         Returns:
             是否已收藏
         """
-        return instruct in self.favorite_instructs
+        return self.instruct_manager.is_favorite(instruct)
+
+    # ========== Voice Design 设计描述收藏管理 ==========
+
+    def _load_favorite_designs(self) -> List[dict]:
+        """
+        加载收藏的设计描述（委托给 FavoriteManager）
+
+        Returns:
+            List[dict]: 设计列表 [{"name": str, "description": str}, ...]
+        """
+        return self.design_manager.get_all()
+
+    def add_favorite_design(self, name: str, description: str) -> bool:
+        """
+        添加收藏的设计描述（委托给 FavoriteManager）
+
+        Args:
+            name: 设计名称
+            description: 设计描述
+
+        Returns:
+            是否成功保存
+        """
+        return self.design_manager.add(name, description)
+
+    def update_favorite_design(self, old_description: str, new_name: str, new_description: str) -> bool:
+        """
+        更新收藏的设计描述（委托给 FavoriteManager）
+
+        Args:
+            old_description: 旧的描述（用于查找）
+            new_name: 新的名称
+            new_description: 新的描述
+
+        Returns:
+            是否成功更新
+        """
+        return self.design_manager.update(old_description, new_name, new_description)
+
+    def remove_favorite_design(self, description: str) -> bool:
+        """
+        移除收藏的设计描述（委托给 FavoriteManager）
+
+        Args:
+            description: 设计描述
+
+        Returns:
+            是否成功移除
+        """
+        result = self.design_manager.remove(description)
+        # 更新向后兼容的属性
+        self.favorite_designs = self.design_manager.items
+        return result
+
+    def get_favorite_designs(self, limit: int = None) -> List[dict]:
+        """
+        获取收藏的设计描述
+
+        Args:
+            limit: 返回数量限制（None表示返回全部）
+
+        Returns:
+            设计列表 [{"name": str, "description": str}, ...]
+        """
+        if limit is None:
+            return self.favorite_designs.copy()
+        return self.favorite_designs[:limit]
 
     # ========== 辅助方法 ==========
 

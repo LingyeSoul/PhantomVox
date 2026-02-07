@@ -48,6 +48,27 @@ if "%LOCAL%"=="%REMOTE%" (
 )
 
 echo [INFO] New updates found!
+echo [INFO] Cleaning untracked files...
+echo [WARNING] This will DELETE untracked files!
+echo [INFO] Important directories will be preserved (vocal, output, models)
+echo.
+
+REM Show what would be deleted (dry-run)
+"%GIT_EXE%" clean -fd --dry-run --exclude=vocal --exclude=output --exclude=models
+echo.
+
+set /p CONFIRM="Continue with cleanup? (Y/N): "
+if /i not "%CONFIRM%"=="Y" (
+    echo [INFO] Cleanup cancelled by user
+    echo [INFO] Proceeding with pull anyway...
+    goto :pull
+)
+
+REM Remove untracked files with exclusions
+"%GIT_EXE%" clean -fd --exclude=vocal --exclude=output --exclude=models
+
+:pull
+
 echo [INFO] Pulling changes...
 echo.
 

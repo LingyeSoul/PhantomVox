@@ -25,6 +25,11 @@ EMOTION_PRESETS = {
     "惊讶": "用惊讶的语气说"
 }
 
+# 收藏相关常量
+DEFAULT_NAME_MAX_LENGTH = 15
+MAX_NAME_LENGTH = 100
+MAX_CONTENT_LENGTH = 5000
+
 
 class CustomVoiceView(ft.Container):
     """自定义语音页面"""
@@ -114,20 +119,33 @@ class CustomVoiceView(ft.Container):
             max_lines=3,
             text_style=ft.TextStyle(font_family="Microsoft YaHei")
         )
+        # 添加输入框变化监听
+        self.instruct_input.on_change = self._on_instruct_change
 
-        # 收藏按钮
+        # 收藏按钮（加号）
         self.favorite_button = ft.IconButton(
-            icon=ft.Icons.FAVORITE_BORDER,
-            tooltip="收藏当前情感指令",
-            on_click=self._on_toggle_favorite
+            icon=ft.Icons.ADD,
+            icon_size=18,
+            tooltip="保存当前情感指令为收藏",
+            on_click=self._on_save_favorite
         )
+
+        # 我的收藏列表（支持横向滚动）
+        self.favorite_chips = ft.Row(
+            [ft.Text("暂无收藏", size=12)],
+            spacing=5,
+            wrap=False,
+            scroll=ft.ScrollMode.AUTO,
+            height=40
+        )
+        self._refresh_favorites()  # 初始化时加载收藏
 
         # 常用预设按钮
         emotion_buttons = []
         for emotion, instruct in EMOTION_PRESETS.items():
             btn = ft.TextButton(
                 content=ft.Text(emotion),
-                on_click=lambda e, i=instruct: self._on_emotion_preset(e, i)
+                on_click=lambda _, i=instruct: self._on_emotion_preset(_, i)
             )
             emotion_buttons.append(btn)
 
@@ -191,6 +209,9 @@ class CustomVoiceView(ft.Container):
                         self.instruct_input,
                         ft.Text("常用预设:", size=12),
                         ft.Row(emotion_buttons, spacing=5, wrap=True),
+                        ft.Divider(height=10),
+                        ft.Text("我的收藏:", size=12),
+                        self.favorite_chips,  # 已经是 Container，直接使用
                     ], spacing=5),
 
                     ft.Divider(),
@@ -258,7 +279,7 @@ class CustomVoiceView(ft.Container):
             expand=True
         )
 
-    def _on_model_changed(self, _):
+    def _on_model_changed(self, e):
         """模型选择改变事件"""
         if self.on_clear_engine_cache:
             self.on_clear_engine_cache(self.model_dropdown.value)
@@ -297,12 +318,12 @@ class CustomVoiceView(ft.Container):
         except Exception as e:
             logger.error(f"刷新模型下拉框失败: {str(e)}", exc_info=True)
 
-    def _on_emotion_preset(self, e, instruct: str):
+    def _on_emotion_preset(self, _, instruct: str):
         """情感预设按钮点击事件"""
         self.instruct_input.value = instruct
         self.instruct_input.update()
 
-    def _on_clear_text(self, e):
+    def _on_clear_text(self, _):
         """清空文本"""
         self.text_panel.clear()
 
@@ -482,8 +503,8 @@ class CustomVoiceView(ft.Container):
                 bgcolor=ft.Colors.RED
             ))
 
-    def _on_toggle_favorite(self, e):
-        """切换收藏按钮点击事件"""
+    def _on_save_favorite(self, _):
+        """保存当前情感指令为收藏"""
         instruct = self.instruct_input.value or ""
         if not instruct.strip():
             self._page.show_dialog(ft.SnackBar(
@@ -493,39 +514,237 @@ class CustomVoiceView(ft.Container):
             return
 
         instruct = instruct.strip()
+        default_name = instruct[:DEFAULT_NAME_MAX_LENGTH] + "..." if len(instruct) > DEFAULT_NAME_MAX_LENGTH else instruct
 
-        # 检查是否已收藏
-        if self.voice_library.is_favorite_instruct(instruct):
-            # 取消收藏
-            self.voice_library.remove_favorite_instruct(instruct)
-            self.favorite_button.icon = ft.Icons.FAVORITE_BORDER
-            self.favorite_button.tooltip = "收藏当前情感指令"
-            self.favorite_button.update()
-            self._page.show_dialog(ft.SnackBar(
-                ft.Text("已取消收藏"),
-                bgcolor=ft.Colors.GREY
-            ))
-        else:
-            # 添加收藏
-            self.voice_library.add_favorite_instruct(instruct)
-            self.favorite_button.icon = ft.Icons.FAVORITE
-            self.favorite_button.tooltip = "取消收藏"
-            self.favorite_button.update()
-            self._page.show_dialog(ft.SnackBar(
-                ft.Text("已添加到收藏"),
-                bgcolor=ft.Colors.GREEN
-            ))
+        # 创建名称输入框
+        name_input = ft.TextField(
+            label="收藏名称",
+            value=default_name,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            autofocus=True
+        )
 
-    def _refresh_favorite_button(self):
-        """刷新收藏按钮状态（当指令输入框内容变化时调用）"""
-        instruct = self.instruct_input.value or ""
-        if instruct.strip() and self.voice_library.is_favorite_instruct(instruct.strip()):
-            self.favorite_button.icon = ft.Icons.FAVORITE
-            self.favorite_button.tooltip = "取消收藏"
+        # 显示对话框
+        def save_dialog(_):
+            name = name_input.value.strip() or default_name
+
+            # 输入验证
+            if len(name) > 100:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"名称过长（最多100字符，当前{len(name)}字符）"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            if len(instruct) > 5000:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"内容过长（最多5000字符，当前{len(instruct)}字符）"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            # 检查名称唯一性
+            existing_names = [f["name"] for f in self.voice_library.get_favorite_instructs()]
+            if name in existing_names:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"收藏名称 \"{name}\" 已存在，请使用其他名称"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            success = self.voice_library.add_favorite_instruct(name, instruct)
+
+            if success:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"已收藏: {name}"),
+                    bgcolor=ft.Colors.GREEN
+                ))
+                self.terminal.add_log(f"已保存收藏: {name}")
+                self._refresh_favorites()  # 刷新收藏显示
+            else:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("保存失败或已存在"),
+                    bgcolor=ft.Colors.RED
+                ))
+            dialog.open = False
+            self._page.update()
+
+        def close_dialog(_):
+            dialog.open = False
+            self._page.update()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("保存收藏", weight=ft.FontWeight.BOLD),
+            content=name_input,
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.TextButton("保存", on_click=save_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+
+        self._page.show_dialog(dialog)
+
+    def _on_instruct_change(self, _):
+        """指令输入框变化事件"""
+        pass
+
+    def _refresh_favorites(self):
+        """刷新收藏列表"""
+        favorites = self.voice_library.get_favorite_instructs()
+
+        if not favorites:
+            self.favorite_chips.controls = [ft.Text("暂无收藏", size=12)]
         else:
-            self.favorite_button.icon = ft.Icons.FAVORITE_BORDER
-            self.favorite_button.tooltip = "收藏当前情感指令"
+            self.favorite_chips.controls.clear()
+            for fav in favorites:  # 显示所有收藏，支持滚动
+                # 创建带菜单的 Chip
+                menu_button = ft.PopupMenuButton(
+                    icon=ft.Icons.MORE_VERT,
+                    items=[
+                        ft.PopupMenuItem(
+                            content=ft.Text("编辑"),
+                            icon=ft.Icons.EDIT,
+                            on_click=lambda _, f=fav: self._on_edit_favorite(_, f)
+                        ),
+                        ft.PopupMenuItem(
+                            content=ft.Text("删除"),
+                            icon=ft.Icons.DELETE,
+                            on_click=lambda _, f=fav: self._on_delete_favorite(_, f)
+                        ),
+                    ]
+                )
+
+                chip_row = ft.Row([
+                    ft.Chip(
+                        label=ft.Text(fav["name"], size=11),
+                        bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.ON_SURFACE),
+                        on_click=lambda _, i=fav["instruct"]: self._on_favorite_click(_, i),
+                        tooltip=fav["instruct"]
+                    ),
+                    menu_button
+                ], spacing=5)
+
+                self.favorite_chips.controls.append(chip_row)
+
+        # 只有在控件已添加到页面时才调用 update()
         try:
-            self.favorite_button.update()
-        except:
+            self.favorite_chips.update()
+        except RuntimeError:
             pass
+
+    def _on_favorite_click(self, _, instruct: str):
+        """收藏项点击事件"""
+        self.instruct_input.value = instruct
+        self.instruct_input.update()
+        self.terminal.add_log("已加载收藏的情感指令")
+
+    def _on_edit_favorite(self, _, fav: dict):
+        """编辑收藏"""
+        old_name = fav["name"]
+        old_instruct = fav["instruct"]
+
+        # 创建输入框
+        name_input = ft.TextField(
+            label="收藏名称",
+            value=old_name,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+        )
+
+        instruct_input = ft.TextField(
+            label="情感指令",
+            value=old_instruct,
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+            autofocus=True
+        )
+
+        # 显示对话框
+        def save_dialog(_):
+            new_name = name_input.value.strip()
+            new_instruct = instruct_input.value.strip()
+
+            if not new_name or not new_instruct:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("名称和指令不能为空"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            success = self.voice_library.update_favorite_instruct(old_instruct, new_name, new_instruct)
+
+            if success:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("已修改"),
+                    bgcolor=ft.Colors.GREEN
+                ))
+                self._refresh_favorites()
+                # 如果当前输入框是旧指令，更新它
+                if self.instruct_input.value == old_instruct:
+                    self.instruct_input.value = new_instruct
+                    self.instruct_input.update()
+            else:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("修改失败"),
+                    bgcolor=ft.Colors.RED
+                ))
+
+            dialog.open = False
+            self._page.update()
+
+        def close_dialog(_):
+            dialog.open = False
+            self._page.update()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("编辑收藏", weight=ft.FontWeight.BOLD),
+            content=ft.Column([name_input, instruct_input], spacing=10, tight=True),
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.TextButton("保存", on_click=save_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+
+        self._page.show_dialog(dialog)
+
+    def _on_delete_favorite(self, _, fav: dict):
+        """删除收藏"""
+        instruct = fav["instruct"]
+        name = fav["name"]
+
+        # 确认对话框
+        def confirm_delete(_):
+            success = self.voice_library.remove_favorite_instruct(instruct)
+            if success:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text(f"已删除: {name}"),
+                    bgcolor=ft.Colors.GREEN
+                ))
+                self._refresh_favorites()
+            else:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("删除失败"),
+                    bgcolor=ft.Colors.RED
+                ))
+            confirm_dialog.open = False
+            self._page.update()
+
+        def close_dialog(_):
+            confirm_dialog.open = False
+            self._page.update()
+
+        confirm_dialog = ft.AlertDialog(
+            title=ft.Text("确认删除", weight=ft.FontWeight.BOLD),
+            content=ft.Text(f"确定要删除收藏 \"{name}\" 吗？"),
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.TextButton("删除", on_click=confirm_delete),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+
+        self._page.show_dialog(confirm_dialog)
+
