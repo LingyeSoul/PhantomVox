@@ -4,11 +4,22 @@ echo  PhantomVox Updater (GitHub) - Git
 echo ========================================
 echo.
 
+REM Set Python virtual environment path
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+
 REM Check if git exists
 git --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Git not found!
     echo Please install Git first.
+    pause
+    exit /b 1
+)
+
+REM Check if Python virtual environment exists
+if not exist "%PYTHON_EXE%" (
+    echo ERROR: Python virtual environment not found at %PYTHON_EXE%
+    echo Please run setup script first.
     pause
     exit /b 1
 )
@@ -64,6 +75,19 @@ echo.
 
 REM Pull changes (with autostash and rebase)
 git pull --rebase --autostash origin main
+
+echo.
+echo ========================================
+echo  Code update completed!
+echo ========================================
+echo.
+
+REM Update dependencies
+echo [1/2] Updating dependencies...
+"%PYTHON_EXE%" -m pip install -r "%~dp0requirements.txt"
+
+echo [2/2] Updating qwen-tts from GitHub...
+"%PYTHON_EXE%" -m pip install git+https://github.com/LingyeSoul/Qwen3-TTS-Streaming
 
 echo.
 echo ========================================

@@ -7,10 +7,21 @@ echo.
 REM Set git path
 set "GIT_EXE=%~dp0env\cmd\git.exe"
 
+REM Set Python path
+set "PYTHON_EXE=%~dp0python-3.12.9-embed\python.exe"
+
 REM Check if embedded git exists
 if not exist "%GIT_EXE%" (
     echo ERROR: Git not found in env folder!
     echo Path: %GIT_EXE%
+    pause
+    exit /b 1
+)
+
+REM Check if embedded Python exists
+if not exist "%PYTHON_EXE%" (
+    echo ERROR: Python embed not found at %PYTHON_EXE%
+    echo Please ensure python-3.12.9-embed directory exists.
     pause
     exit /b 1
 )
@@ -67,6 +78,19 @@ echo.
 
 REM Pull changes (with autostash and rebase)
 "%GIT_EXE%" pull --rebase --autostash origin main
+
+echo.
+echo ========================================
+echo  Code update completed!
+echo ========================================
+echo.
+
+REM Update dependencies
+echo [1/2] Updating dependencies...
+"%PYTHON_EXE%" -m pip install -r "%~dp0requirements.txt"
+
+echo [2/2] Updating qwen-tts from GitHub...
+"%PYTHON_EXE%" -m pip install git+https://github.com/LingyeSoul/Qwen3-TTS-Streaming
 
 echo.
 echo ========================================
