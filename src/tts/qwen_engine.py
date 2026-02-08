@@ -236,7 +236,7 @@ class QwenEngine:
 
         try:
             if mode == "streaming":
-                # 流式模式：禁用 torch.compile（Windows 兼容性）
+                # 流式模式
                 logger.info("正在启用流式生成优化...")
                 self.model.enable_streaming_optimizations(
                     decode_window_frames=self.streaming_decode_window,
@@ -247,7 +247,7 @@ class QwenEngine:
                 logger.info(f"✓ 流式优化已启用 (decode_window={self.streaming_decode_window}, 快速 codebook)")
 
             elif mode == "non_streaming":
-                # 非流式模式：使用完整优化（包括 torch.compile）
+                # 非流式模式：使用完整优化
                 logger.info("正在启用非流式生成优化...")
                 self.model.enable_streaming_optimizations(
                     decode_window_frames=300,  # 非流式使用更大的窗口

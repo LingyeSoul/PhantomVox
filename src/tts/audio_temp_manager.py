@@ -180,8 +180,11 @@ class AudioTempManager:
         import shutil
         from datetime import datetime
 
+        # 使用 Path 对象规范化路径，确保斜杠方向一致
+        save_path = Path(save_dir)
+
         # 确保保存目录存在
-        os.makedirs(save_dir, exist_ok=True)
+        save_path.mkdir(parents=True, exist_ok=True)
 
         # 生成文件名
         if custom_filename:
@@ -194,10 +197,13 @@ class AudioTempManager:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{prefix}_{timestamp}.wav"
 
-        save_path = os.path.join(save_dir, filename)
+        # 使用 Path 构建完整路径，自动处理斜杠
+        full_path = save_path / filename
 
         # 复制临时文件到目标位置
-        shutil.copy2(temp_file_path, save_path)
+        shutil.copy2(temp_file_path, str(full_path))
 
-        logger.info(f"✓ 音频已保存到: {save_path}")
-        return save_path
+        # 返回规范化的路径字符串
+        normalized_path = str(full_path)
+        logger.info(f"✓ 音频已保存到: {normalized_path}")
+        return normalized_path
