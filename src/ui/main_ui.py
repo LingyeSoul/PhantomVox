@@ -20,6 +20,7 @@ from ui.components.settings_view import SettingsView
 from ui.components.about_view import AboutView
 from ui.components.model_manager_view import ModelManagerView
 from ui.components.tts_service_view import TTSServiceView
+from ui.components.system_monitor_view import SystemMonitorView
 from core.terminal import AsyncTerminal
 from core.model_manager import ModelManager
 from core.task_engine import get_task_engine, TaskType
@@ -136,6 +137,9 @@ class PhantomUI:
         # TTS 服务视图（延迟初始化）
         self.tts_service_view = None
 
+        # 系统监控组件
+        self.system_monitor = SystemMonitorView(page=page, update_interval=1.0)
+
         # UI 样式配置
         self.BStyle = ft.ButtonStyle(
             icon_size=20,
@@ -147,9 +151,6 @@ class PhantomUI:
 
         # 文件选择器
         self._file_picker = ft.FilePicker()
-
-        # 终端展开状态
-        self._terminal_expanded = True
 
         # 初始化 AppBar
         self.app_bar = PhantomAppBar(
@@ -164,9 +165,47 @@ class PhantomUI:
 
         logger.info("PhantomVox UI 初始化完成")
 
+    def _create_qwen_engine_lazy(
+        self,
+        model_path: str,
+        model_type: str,
+        device: str,
+        dtype,
+        attn_implementation: str,
+        shared_tokenizer_path: Optional[str],
+    ) -> QwenEngine:
+        """
+        创建 Qwen 引擎（延迟加载模式）
+
+        此方法只创建引擎对象，不加载模型，用于任务引擎中异步加载。
+
+        Returns:
+            QwenEngine: 未加载模型的引擎实例
+        """
+        return QwenEngine(
+            model_path=model_path,
+            model_type=model_type,
+            device=device,
+            dtype=dtype,
+            attn_implementation=attn_implementation,
+            shared_tokenizer_path=shared_tokenizer_path,
+            enable_streaming=True,
+            streaming_decode_window=80,
+            lazy_load=True,  # 延迟加载模式
+        )
+
+    def _load_qwen_engine_sync(self, engine: QwenEngine):
+        """
+        同步加载 Qwen 引擎（在线程池中执行）
+
+        Args:
+            engine: 延迟加载的 QwenEngine 实例
+        """
+        engine.load_model(force_reload=True)
+
     async def _load_model_async(self, model_id: str) -> SafeTTSEngineProxy:
         """
-        异步加载模型（带锁保护）
+        异步加载模型（通过任务引擎，不阻塞UI）
 
         Args:
             model_id: 要加载的模型ID
@@ -205,19 +244,33 @@ class PhantomUI:
             else:
                 model_type = None
 
-            # 创建原始引擎
-            raw_engine = QwenEngine(
+            # 步骤1：创建延迟加载的引擎（快速，不阻塞）
+            raw_engine = self._create_qwen_engine_lazy(
                 model_path=str(model_path),
                 model_type=model_type,
                 device=device,
                 dtype=dtype,
                 attn_implementation=attn_implementation,
                 shared_tokenizer_path=shared_tokenizer_path,
-                enable_streaming=True,
-                streaming_decode_window=80
             )
 
-            # 包装为安全代理
+            # 步骤2：通过任务引擎加载模型（在后台线程执行，不阻塞UI）
+            await self.task_engine.submit(
+                task_type=TaskType.LOAD,
+                func=self._load_qwen_engine_sync,
+                args=(raw_engine,),
+                description=f"加载模型: {model_info.name if model_info else model_id}",
+                priority=10,  # 高优先级，确保加载优先完成
+            )
+
+            # 步骤2.5：验证模型已成功加载
+            if raw_engine.model is None:
+                raise RuntimeError(
+                    f"模型加载失败: {model_info.name if model_info else model_id} - "
+                    "模型对象为空，请检查日志了解详情"
+                )
+
+            # 步骤3：包装为安全代理
             proxy = SafeTTSEngineProxy(
                 engine=raw_engine,
                 task_engine=self.task_engine,
@@ -351,6 +404,7 @@ class PhantomUI:
             label_type=ft.NavigationRailLabelType.ALL,
             min_width=100,
             min_extended_width=200,
+            expand=True,
             destinations=[
                 ft.NavigationRailDestination(
                     icon=ft.Icons.MIC,
@@ -694,13 +748,12 @@ class PhantomUI:
             self._get_custom_voice_view()
         ], expand=True)
 
-        # 创建终端日志容器引用（用于折叠/展开）
-        self._terminal_logs_container = ft.Container(
+        # 创建终端日志组件（用于 ExpansionTile 的 controls）
+        self._terminal_logs_content = ft.Container(
             content=self.terminal.logs,
             border=ft.Border.all(1, ft.Colors.GREY_400),
             border_radius=8,
             padding=5,
-            height=150,
         )
 
         # 创建右侧主容器（包含内容和终端）
@@ -715,36 +768,47 @@ class PhantomUI:
             # 分隔线
             ft.Divider(height=1, color=ft.Colors.GREY_300),
 
-            # 全局固定终端
+            # 全局固定终端 - 使用 ExpansionTile
             ft.Container(
-                content=ft.Column([
-                    ft.Row([
-                        ft.Text("运行日志", size=14, weight=ft.FontWeight.BOLD),
-                        ft.Container(expand=True),
-                        ft.IconButton(
-                            icon=ft.Icons.CLEAR,
-                            icon_size=18,
-                            tooltip="清空日志",
-                            on_click=self._on_clear_terminal
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.EXPAND_LESS,
-                            icon_size=18,
-                            tooltip="折叠/展开",
-                            on_click=self._on_toggle_terminal
+                content=ft.ExpansionTile(
+                    title=ft.Text("运行日志", size=14, weight=ft.FontWeight.BOLD),
+                    subtitle=ft.Text("点击展开/折叠日志", size=12, color=ft.Colors.GREY),
+                    expanded=True,
+                    leading=ft.IconButton(
+                        icon=ft.Icons.CLEAR,
+                        icon_size=18,
+                        tooltip="清空日志",
+                        on_click=self._on_clear_terminal
+                    ),
+                    controls_padding=ft.padding.symmetric(horizontal=0, vertical=5),
+                    controls=[
+                        ft.Container(
+                            content=self._terminal_logs_content,
                         )
-                    ], spacing=10),
-                    self._terminal_logs_container,
-                ], spacing=5),
+                    ],
+                    bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+                    collapsed_bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+                ),
                 padding=ft.padding.symmetric(horizontal=20, vertical=10),
-                bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
             )
         ], expand=True, spacing=0)
 
+        # 创建左侧面板（包含导航栏和系统监控）
+        left_panel = ft.Column(
+            [
+                # 导航栏
+                rail,
+                # 系统监控组件（在底部）
+                self.system_monitor.build(),
+            ],
+            #expand=True,
+            spacing=0
+        )
+
         # 主布局
         main_view = ft.Row([
-            # 左侧导航栏
-            rail,
+            # 左侧面板（导航栏 + 系统监控）
+            left_panel,
             ft.VerticalDivider(width=1),
             # 右侧主容器
             right_panel
@@ -797,6 +861,14 @@ class PhantomUI:
                     logger.info("TTS线程池已关闭")
                 except Exception as thread_pool_err:
                     logger.warning(f"关闭TTS线程池时出错: {thread_pool_err}")
+
+                # 清理系统监控线程
+                try:
+                    if hasattr(self, 'system_monitor') and self.system_monitor:
+                        await self.system_monitor.stop_monitoring()
+                        logger.info("系统监控已停止")
+                except Exception as monitor_err:
+                    logger.warning(f"停止系统监控时出错: {monitor_err}")
 
                 # 保存配置
                 self.config_manager.save_config()
@@ -852,22 +924,6 @@ class PhantomUI:
     def _on_clear_terminal(self, e):
         # 清空终端日志
         self.terminal.clear_terminal()
-
-    def _on_toggle_terminal(self, e):
-        # 折叠/展开终端
-        if self._terminal_expanded:
-            # 折叠
-            self._terminal_logs_container.height = 0
-            self._terminal_logs_container.visible = False
-            e.control.icon = ft.Icons.EXPAND_MORE
-        else:
-            # 展开
-            self._terminal_logs_container.height = 150
-            self._terminal_logs_container.visible = True
-            e.control.icon = ft.Icons.EXPAND_LESS
-        self._terminal_expanded = not self._terminal_expanded
-        self._terminal_logs_container.update()
-        e.control.update()
 
 
 

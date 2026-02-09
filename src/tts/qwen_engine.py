@@ -299,6 +299,7 @@ class QwenEngine:
         shared_tokenizer_path: Optional[str] = None,
         enable_streaming: bool = True,
         streaming_decode_window: int = 80,
+        lazy_load: bool = False,
     ):
         """
         初始化 Qwen TTS 引擎
@@ -312,6 +313,7 @@ class QwenEngine:
             shared_tokenizer_path: 共享 tokenizer 路径（可选）
             enable_streaming: 是否启用流式输出（默认 True）
             streaming_decode_window: 流式解码窗口大小（默认 80）
+            lazy_load: 是否延迟加载模型（默认 False，保持向后兼容）
         """
         self.model: Optional[Qwen3TTSModel] = None
         self.device = device
@@ -327,7 +329,9 @@ class QwenEngine:
         self._current_optimization_mode = None
         self._optimization_lock = asyncio.Lock()  # 保护优化切换的锁
 
-        self._load_model()
+        # 延迟加载模式：不自动加载模型，由调用方手动调用 load_model()
+        if not lazy_load:
+            self._load_model()
 
     def _load_model(self):
         """加载 Qwen3-TTS 模型"""
@@ -397,6 +401,26 @@ class QwenEngine:
         except Exception as e:
             logger.error(f"✗ 模型加载失败: {str(e)}")
             raise
+
+    def load_model(self, force_reload=False):
+        """
+        手动加载模型（用于延迟加载模式）
+
+        在延迟加载模式（lazy_load=True）下，需要手动调用此方法加载模型。
+        此方法是同步的，建议在线程池或任务引擎中调用以避免阻塞。
+
+        Args:
+            force_reload: 是否强制重新加载（即使模型已加载）。默认为 False。
+                         设置为 True 允许在模型卸载后重新加载。
+
+        Raises:
+            RuntimeError: 如果模型已加载且 force_reload=False
+            Exception: 模型加载失败时抛出
+        """
+        if self.model is not None and not force_reload:
+            raise RuntimeError("模型已加载，请勿重复加载")
+
+        self._load_model()
 
     def _apply_optimizations(self, mode: str):
         """
