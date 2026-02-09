@@ -13,6 +13,7 @@ triton-windows<3.6; sys_platform == 'win32' and platform_machine == 'AMD64'
 # Audio processing
 sounddevice>=0.5.5
 soundfile>=0.12.0
+pydub>=0.25.1
 
 # Other dependencies
 aiohttp>=3.8.0

@@ -33,6 +33,177 @@ logger = logging.getLogger(__name__)
 _SHARED_TOKENIZER_DIR = None  # 共享 tokenizer 路径
 
 
+# ========== 音频加载 Patch ==========
+
+_original_librosa_load = None  # 保存原始的 librosa.load 函数
+
+
+def _load_audio_with_pydub(audio_path: str, sr: int = None, mono: bool = True):
+    """
+    使用 pydub (ffmpeg) 加载音频数据（直接返回音频数组，内存操作）
+
+    Args:
+        audio_path: 音频文件路径
+        sr: 目标采样率（None 表示使用原采样率）
+        mono: 是否转换为单声道
+
+    Returns:
+        tuple: (音频数据, 采样率)
+    """
+    import numpy as np
+    logger = logging.getLogger(__name__)
+
+    try:
+        from pydub import AudioSegment
+    except ImportError:
+        logger.debug("pydub 未安装")
+        return None
+
+    try:
+        # 安全验证：解析并规范化路径
+        abs_audio_path = os.path.abspath(audio_path)
+        normalized_path = os.path.normpath(abs_audio_path)
+
+        # 验证文件存在
+        if not os.path.exists(normalized_path):
+            logger.warning(f"音频文件不存在: {audio_path}")
+            return None
+
+        # 验证是文件而不是目录
+        if not os.path.isfile(normalized_path):
+            logger.warning(f"路径不是文件: {audio_path}")
+            return None
+
+        # 验证文件大小
+        from .audio_utils import MAX_AUDIO_FILE_SIZE
+        file_size = os.path.getsize(normalized_path)
+        if file_size == 0:
+            logger.warning(f"音频文件为空: {audio_path}")
+            return None
+        if file_size > MAX_AUDIO_FILE_SIZE:
+            logger.warning(f"音频文件过大: {file_size / 1024 / 1024:.2f} MB")
+            return None
+
+        logger.debug(f"使用 pydub 加载音频: {normalized_path}")
+
+        # 使用 pydub 加载音频
+        audio = AudioSegment.from_file(normalized_path)
+
+        # 验证音频时长（防止资源耗尽攻击）
+        from .audio_utils import MAX_AUDIO_DURATION_SECONDS
+        duration_seconds = len(audio) / 1000.0
+        if duration_seconds > MAX_AUDIO_DURATION_SECONDS:
+            logger.warning(f"音频时长过长: {duration_seconds / 60:.2f} 分钟")
+            return None
+
+        # 记录原始音频信息
+        original_sr = audio.frame_rate
+        original_channels = audio.channels
+        logger.debug(f"原始音频: sr={original_sr}, channels={original_channels}, duration={len(audio)}ms")
+
+        # 设置输出格式
+        if sr:
+            audio = audio.set_frame_rate(sr)
+        if mono:
+            audio = audio.set_channels(1)
+
+        # 转换为 numpy 数组并正确归一化
+        # AudioSegment 的 sample_width 决定音频位深度：
+        #   - 1 byte = 8-bit (unsigned, 范围 0-255)
+        #   - 2 bytes = 16-bit (有符号, 范围 -32768 到 32767)
+        #   - 3 bytes = 24-bit (有符号, 范围 -8388608 到 8388607)
+        #   - 4 bytes = 32-bit (有符号, 范围 -2147483648 到 2147483647)
+        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+
+        # 根据实际位深度计算归一化因子
+        sample_width = audio.sample_width
+
+        # 验证 sample_width 范围（防止意外的值导致错误）
+        if sample_width < 1 or sample_width > 4:
+            logger.warning(f"不支持的音频位深度: sample_width={sample_width}")
+            return None
+
+        if sample_width == 1:  # 8-bit unsigned
+            # 先转换为有符号（以 128 为中心），再归一化
+            samples = (samples - 128.0) / 128.0
+        else:
+            # 对于有符号整数，归一化因子为 2^(8*sample_width - 1)
+            max_value = float(2 ** (8 * sample_width - 1))
+            samples /= max_value  # 归一化到 [-1, 1]
+
+        logger.debug(f"音频位深度: {8*sample_width}-bit, 归一化后范围: [{samples.min():.3f}, {samples.max():.3f}]")
+
+        actual_sr = audio.frame_rate
+
+        logger.info(f"✓ pydub 成功加载音频: {normalized_path}, shape={samples.shape}, sr={actual_sr}")
+        return samples, actual_sr
+
+    # 只捕获可恢复的异常，让严重错误向上传播
+    except ImportError as e:
+        logger.debug(f"pydub 未安装: {e}")
+        return None
+    except (FileNotFoundError, OSError, IOError) as e:
+        logger.warning(f"音频文件读取失败: {type(e).__name__}: {e}")
+        return None
+    except RuntimeError as e:
+        # pydub 处理失败（如不支持的视频编码）
+        logger.warning(f"pydub 音频处理失败: {e}")
+        return None
+
+
+def _patched_librosa_load(path, *args, **kwargs):
+    """
+    Patched 版本的 librosa.load
+
+    对于非 WAV 文件，优先使用 pydub (ffmpeg) 加载（避免 mpg123 错误）
+    如果 pydub 不可用或失败，回退到原始的 librosa.load
+    """
+    # 如果是 WAV 文件，直接使用原始方法
+    if path.lower().endswith('.wav'):
+        return _original_librosa_load(path, *args, **kwargs)
+
+    logger.debug(f"[PATCH] 加载非 WAV 音频: {path}")
+
+    # 尝试使用 pydub 加载
+    result = _load_audio_with_pydub(path,
+                                     sr=kwargs.get('sr'),
+                                     mono=kwargs.get('mono', True))
+
+    if result is not None:
+        audio, sr = result
+        logger.info(f"✓ 使用 pydub (ffmpeg) 成功加载音频: {path}")
+        return audio, sr
+
+    # pydub 失败，回退到原始 librosa.load
+    logger.debug(f"回退到 librosa.load: {path}")
+    return _original_librosa_load(path, *args, **kwargs)
+
+
+def _apply_librosa_patch():
+    """应用 librosa.load patch"""
+    global _original_librosa_load
+
+    try:
+        import librosa
+
+        # 保存原始函数
+        if _original_librosa_load is None:
+            _original_librosa_load = librosa.load
+
+        # 应用 patch
+        librosa.load = _patched_librosa_load
+
+        logger.info("[PATCH] ✓ 已应用 librosa.load patch（使用 pydub/ffmpeg 加载非 WAV 音频）")
+
+    except ImportError:
+        logger.warning("[PATCH] ⚠ librosa 未安装，跳过 patch")
+    except Exception as e:
+        logger.error(f"[PATCH] ✗ 应用 librosa.patch 失败: {e}")
+
+
+# =========================================
+
+
 def _patch_tokenizer_loading():
     """
     Patch transformers 的 cached_file 和 cached_files 以支持共享 tokenizer。
@@ -161,6 +332,9 @@ class QwenEngine:
     def _load_model(self):
         """加载 Qwen3-TTS 模型"""
         global _SHARED_TOKENIZER_DIR
+
+        # 应用 librosa patch（在模型加载前）
+        _apply_librosa_patch()
 
         try:
             logger.info(f"正在加载 Qwen3-TTS 模型 ({self.model_type or '默认'})...")
@@ -626,39 +800,6 @@ class QwenEngine:
         raise TTSInvalidParameterError(
             "clone_prompt 必须是 VoiceClonePromptItem、List[VoiceClonePromptItem] 或 dict"
         )
-        """
-        将 VoiceClonePromptItem 对象转换为字典格式
-
-        模型期望这些字段是列表格式（支持多个 prompt items）
-        """
-        # 如果已经是字典，确保格式正确
-        if isinstance(clone_prompt, dict):
-            # 检查是否已经是列表格式
-            if isinstance(clone_prompt.get("x_vector_only_mode"), (list, tuple)):
-                return clone_prompt
-            # 如果是单个值，转换为列表格式
-            return {
-                "ref_code": [clone_prompt["ref_code"]] if clone_prompt["ref_code"] is not None else None,
-                "ref_spk_embedding": [clone_prompt["ref_spk_embedding"]],
-                "x_vector_only_mode": [clone_prompt["x_vector_only_mode"]],
-                "icl_mode": [clone_prompt["icl_mode"]],
-                "ref_text": [clone_prompt["ref_text"]] if clone_prompt.get("ref_text") else None
-            }
-
-        # 如果是 VoiceClonePromptItem 对象，转换为字典
-        try:
-            return {
-                "ref_code": [clone_prompt.ref_code] if clone_prompt.ref_code is not None else None,
-                "ref_spk_embedding": [clone_prompt.ref_spk_embedding],
-                "x_vector_only_mode": [clone_prompt.x_vector_only_mode],
-                "icl_mode": [clone_prompt.icl_mode],
-                "ref_text": [clone_prompt.ref_text] if clone_prompt.ref_text else None
-            }
-        except AttributeError as e:
-            logger.error(f"转换 clone_prompt 失败: {e}")
-            raise TTSInvalidParameterError(
-                "clone_prompt 格式无效，需要 VoiceClonePromptItem 对象或字典"
-            )
 
     def voice_clone_synthesize(
         self,

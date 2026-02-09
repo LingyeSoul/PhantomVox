@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_NAME_MAX_LENGTH = 15  # 默认名称最大长度（字符）
 DEFAULT_DESCRIPTION_MAX_LENGTH = 10  # 默认描述最大长度（字符）
 MAX_FAVORITES = 50  # 收藏最大数量
+MAX_AUDIO_FILE_SIZE = 100 * 1024 * 1024  # 音频文件最大大小：100 MB（防止资源耗尽攻击）
 MAX_NAME_LENGTH = 100  # 收藏名称最大长度（字符）
 MAX_CONTENT_LENGTH = 5000  # 收藏内容最大长度（字符）
 
@@ -203,29 +204,160 @@ class VocalDataManager:
 
     def _convert_to_wav(self, source_path: str, target_path: Path):
         """
-        转换音频为 WAV 格式
+        安全地转换音频为 WAV 格式（带路径验证和音频属性验证）
+
+        Args:
+            source_path: 源音频路径
+            target_path: 目标 WAV 路径
+
+        Raises:
+            FileNotFoundError: 源文件不存在
+            ValueError: 音频验证失败（路径、大小、时长等）
+            RuntimeError: 转换失败
+        """
+        # 导入安全工具函数
+        try:
+            from .audio_utils import (
+                validate_audio_path,
+                validate_file_exists_and_readable,
+                validate_file_size,
+                validate_audio_extension,
+                convert_to_wav as utils_convert_to_wav,
+                QWEN_TTS_SAMPLE_RATE
+            )
+        except ImportError:
+            logger.warning("audio_utils 模块不可用，使用旧方法")
+            # 回退到旧方法（带基本验证）
+            self._convert_to_wav_legacy(source_path, target_path)
+            return
+
+        try:
+            # 路径规范化和验证（不限制目录位置，允许任意文件路径）
+            # 桌面应用应允许用户从任何位置选择音频文件
+            safe_source_path = validate_audio_path(source_path, allowed_directories=None)
+
+            # 文件存在性和可读性验证
+            validate_file_exists_and_readable(safe_source_path)
+
+            # 文件大小验证
+            validate_file_size(safe_source_path)
+
+            # 文件扩展名验证
+            validate_audio_extension(safe_source_path)
+
+            logger.info(f"开始转换音频: {safe_source_path}")
+
+            # 使用安全的转换函数（包含时长、采样率验证）
+            utils_convert_to_wav(
+                source_path=safe_source_path,
+                target_path=str(target_path),
+                sample_rate=QWEN_TTS_SAMPLE_RATE,
+                allowed_directories=None  # 允许任意源路径
+            )
+
+            logger.info(f"✓ 音频转换成功: {target_path}")
+
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
+            logger.error(f"音频转换失败: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"音频转换失败（未预期的错误）: {e}")
+            # 记录详细错误到日志，返回通用错误给用户
+            raise RuntimeError(f"音频转换失败，请检查文件格式是否正确")
+
+    def _convert_to_wav_legacy(self, source_path: str, target_path: Path):
+        """
+        旧版音频转换方法（仅当 audio_utils 不可用时使用）
 
         Args:
             source_path: 源音频路径
             target_path: 目标 WAV 路径
         """
+        # 基本安全验证
+        abs_source_path = os.path.abspath(source_path)
+        normalized_path = os.path.normpath(abs_source_path)
+
+        if not os.path.exists(normalized_path):
+            raise FileNotFoundError(f"音频文件不存在: {source_path}")
+
+        file_size = os.path.getsize(normalized_path)
+        if file_size == 0:
+            raise ValueError(f"音频文件为空: {source_path}")
+        if file_size > MAX_AUDIO_FILE_SIZE:
+            raise ValueError(
+                f"音频文件过大: {file_size / 1024 / 1024:.2f} MB "
+                f"(最大允许 {MAX_AUDIO_FILE_SIZE / 1024 / 1024:.0f} MB)"
+            )
+
+        logger.info(f"开始转换音频（旧方法）: {normalized_path}")
+
+        # 方法1：使用 pydub (ffmpeg)
         try:
-            # 尝试使用 librosa
+            from pydub import AudioSegment
+
+            logger.debug("使用 pydub (ffmpeg) 转换音频")
+
+            # 加载音频
+            audio = AudioSegment.from_file(normalized_path)
+
+            # 基本验证
+            duration_seconds = len(audio) / 1000.0
+            if duration_seconds > 300:  # 5分钟
+                raise ValueError(f"音频时长过长: {duration_seconds / 60:.2f} 分钟")
+
+            # 设置输出参数：24kHz, 单声道
+            audio = audio.set_frame_rate(24000)
+            audio = audio.set_channels(1)
+
+            # 使用临时文件确保原子性写入
+            temp_path = str(target_path) + '.tmp'
+            audio.export(temp_path, format="wav")
+
+            # 原子性重命名
+            if os.path.exists(target_path):
+                os.remove(target_path)
+            os.rename(temp_path, target_path)
+
+            logger.info(f"✓ 音频转换成功 (pydub): {target_path}")
+            return
+
+        except ImportError:
+            logger.debug("pydub 未安装，尝试其他方法")
+        except Exception as e:
+            logger.warning(f"pydub 转换失败: {e}，尝试其他方法")
+            # 清理临时文件
+            temp_path = str(target_path) + '.tmp'
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+
+        # 方法2：使用 librosa（备选）
+        try:
             import librosa
             import soundfile as sf
 
-            audio, sr = librosa.load(source_path, sr=None)
-            sf.write(target_path, audio, sr)
-        except ImportError:
-            # 如果没有 librosa，使用 pydub
-            try:
-                from pydub import AudioSegment
+            logger.debug("使用 librosa 转换音频")
+            audio, sr = librosa.load(normalized_path, sr=24000, mono=True)
 
-                audio = AudioSegment.from_file(source_path)
-                audio.export(str(target_path), format="wav")
-            except ImportError:
-                # 如果都没有，直接复制（假设已经是支持的格式）
-                shutil.copy2(source_path, target_path)
+            sf.write(target_path, audio, sr)
+            logger.info(f"✓ 音频转换成功 (librosa): {target_path}")
+            return
+
+        except ImportError:
+            logger.debug("librosa 未安装")
+        except Exception as e:
+            logger.error(f"librosa 转换失败: {e}")
+
+        # 如果所有方法都失败，抛出异常
+        raise RuntimeError(
+            f"无法转换音频文件: {source_path}\n"
+            f"请确保：\n"
+            f"  1. 已安装 pydub（pip install pydub）\n"
+            f"  2. 音频文件格式正确（支持 mp3, wav, m4a, ogg 等）\n"
+            f"  3. 音频文件未损坏"
+        )
 
     def _update_clone_index(self, clone_id: str, metadata: dict):
         """
