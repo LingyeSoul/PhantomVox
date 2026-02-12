@@ -619,6 +619,115 @@ class QwenEngine:
 
         logger.info("✓ [Streaming] 流式生成完成")
 
+    async def custom_voice_batch_stream_synthesize_async(
+        self,
+        texts: List[str],
+        speaker: str = "Vivian",
+        language: str = "Chinese",
+        instruct: str = "",
+        emit_every_frames: int = 8,
+        decode_window_frames: int = 80,
+        first_chunk_emit_every: int = 5,
+        first_chunk_decode_window: int = 48,
+        first_chunk_frames: int = 48,
+        **kwargs
+    ) -> AsyncGenerator[Tuple[List[np.ndarray], int], None]:
+        """
+        Custom Voice 批量流式生成
+
+        使用底层 batch_stream_generate_pcm 方法，
+        实现多个文本的并行流式生成。所有文本共享 KV cache，同步推进。
+
+        Args:
+            texts: 文本列表
+            speaker: 说话人（广播到所有文本）
+            language: 语言（广播到所有文本）
+            instruct: 情感指令（广播到所有文本，可选）
+            emit_every_frames: 音频块发射间隔（帧）
+            decode_window_frames: 解码窗口大小（帧）
+            first_chunk_emit_every: 首块发射间隔
+            first_chunk_decode_window: 首块解码窗口
+            first_chunk_frames: 首块帧数
+            **kwargs: 其他参数
+
+        Yields:
+            Tuple[List[np.ndarray], int]: (每个文本的音频块列表, 采样率)
+                - 每个 yield 返回所有文本当前生成的音频块
+                - 已完成的文本返回空数组
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        # 确保使用流式优化
+        await self._ensure_optimization_mode("streaming")
+
+        if not texts:
+            return
+
+        # 验证文本
+        for i, text in enumerate(texts):
+            if not text or not text.strip():
+                raise TTSInvalidParameterError(f"文本 {i+1} 为空")
+
+        logger.info(f"[Batch Streaming] 正在批量流式生成 {len(texts)} 个文本 (Custom Voice)...")
+
+        # 为每个文本构建 input_ids
+        input_ids = []
+        for text in texts:
+            assistant_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+            inp = self.model.processor(text=assistant_text, return_tensors="pt", padding=True)
+            ids = inp["input_ids"].to(self.model.device)
+            if ids.dim() == 1:
+                ids = ids.unsqueeze(0)
+            input_ids.append(ids)
+
+        # 构建可选的 instruct_ids
+        instruct_ids = None
+        if instruct and instruct.strip():
+            instruct_text = f"<|im_start|>user\n{instruct}<|im_end|>\n"
+            instruct_inp = self.model.processor(text=instruct_text, return_tensors="pt", padding=True)
+            instruct_id = instruct_inp["input_ids"].to(self.model.device)
+            if instruct_id.dim() == 1:
+                instruct_id = instruct_id.unsqueeze(0)
+            instruct_ids = [instruct_id] * len(texts)
+
+        def batch_stream_generator() -> Generator[Tuple[List[np.ndarray], int], None, None]:
+            """同步批量流式生成器"""
+            for chunks_list, sr in self.model.model.batch_stream_generate_pcm(
+                input_ids=input_ids,
+                instruct_ids=instruct_ids,
+                speakers=[speaker],
+                languages=[language] * len(texts),
+                voice_clone_prompt=None,
+                emit_every_frames=emit_every_frames,
+                decode_window_frames=decode_window_frames,
+                first_chunk_emit_every=first_chunk_emit_every,
+                first_chunk_decode_window=first_chunk_decode_window,
+                first_chunk_frames=first_chunk_frames,
+            ):
+                # 过滤全空的块
+                has_content = any(chunk.size > 0 for chunk in chunks_list)
+                if has_content:
+                    yield chunks_list, sr
+
+        # 异步迭代
+        gen = batch_stream_generator()
+        loop = asyncio.get_event_loop()
+
+        while True:
+            def get_next_batch():
+                try:
+                    return next(gen), False
+                except StopIteration:
+                    return None, True
+
+            batch_info, is_stop = await loop.run_in_executor(None, get_next_batch)
+            if is_stop:
+                break
+            yield batch_info
+
+        logger.info("✓ [Batch Streaming] Custom Voice 批量流式生成完成")
+
     # ========== Voice Design 模式 ==========
 
     def voice_design_synthesize(
@@ -742,6 +851,111 @@ class QwenEngine:
             yield chunk_info
 
         logger.info("✓ [Streaming] 流式生成完成")
+
+    async def voice_design_batch_stream_synthesize_async(
+        self,
+        texts: List[str],
+        design_prompt: str,
+        language: str = "Chinese",
+        emit_every_frames: int = 8,
+        decode_window_frames: int = 80,
+        first_chunk_emit_every: int = 5,
+        first_chunk_decode_window: int = 48,
+        first_chunk_frames: int = 48,
+        **kwargs
+    ) -> AsyncGenerator[Tuple[List[np.ndarray], int], None]:
+        """
+        Voice Design 批量流式生成
+
+        使用底层 batch_stream_generate_pcm 方法，
+        实现多个文本的并行流式生成。所有文本共享 KV cache，同步推进。
+
+        Args:
+            texts: 文本列表
+            design_prompt: 声音设计描述（作为 instruct，广播到所有文本）
+            language: 语言（广播到所有文本）
+            emit_every_frames: 音频块发射间隔（帧）
+            decode_window_frames: 解码窗口大小（帧）
+            first_chunk_emit_every: 首块发射间隔
+            first_chunk_decode_window: 首块解码窗口
+            first_chunk_frames: 首块帧数
+            **kwargs: 其他参数
+
+        Yields:
+            Tuple[List[np.ndarray], int]: (每个文本的音频块列表, 采样率)
+                - 每个 yield 返回所有文本当前生成的音频块
+                - 已完成的文本返回空数组
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        # 确保使用流式优化
+        await self._ensure_optimization_mode("streaming")
+
+        if not texts:
+            return
+
+        # 验证文本
+        for i, text in enumerate(texts):
+            if not text or not text.strip():
+                raise TTSInvalidParameterError(f"文本 {i+1} 为空")
+
+        logger.info(f"[Batch Streaming] 正在批量流式生成 {len(texts)} 个文本 (Voice Design)...")
+
+        # 为每个文本构建 input_ids
+        input_ids = []
+        for text in texts:
+            assistant_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+            inp = self.model.processor(text=assistant_text, return_tensors="pt", padding=True)
+            ids = inp["input_ids"].to(self.model.device)
+            if ids.dim() == 1:
+                ids = ids.unsqueeze(0)
+            input_ids.append(ids)
+
+        # 从 design_prompt 构建 instruct_ids
+        instruct_text = f"<|im_start|>user\n{design_prompt}<|im_end|>\n"
+        instruct_inp = self.model.processor(text=instruct_text, return_tensors="pt", padding=True)
+        instruct_id = instruct_inp["input_ids"].to(self.model.device)
+        if instruct_id.dim() == 1:
+            instruct_id = instruct_id.unsqueeze(0)
+        instruct_ids = [instruct_id] * len(texts)
+
+        def batch_stream_generator() -> Generator[Tuple[List[np.ndarray], int], None, None]:
+            """同步批量流式生成器"""
+            for chunks_list, sr in self.model.model.batch_stream_generate_pcm(
+                input_ids=input_ids,
+                instruct_ids=instruct_ids,
+                speakers=None,  # Voice Design 不使用 speakers
+                languages=[language] * len(texts),
+                voice_clone_prompt=None,
+                emit_every_frames=emit_every_frames,
+                decode_window_frames=decode_window_frames,
+                first_chunk_emit_every=first_chunk_emit_every,
+                first_chunk_decode_window=first_chunk_decode_window,
+                first_chunk_frames=first_chunk_frames,
+            ):
+                # 过滤全空的块
+                has_content = any(chunk.size > 0 for chunk in chunks_list)
+                if has_content:
+                    yield chunks_list, sr
+
+        # 异步迭代
+        gen = batch_stream_generator()
+        loop = asyncio.get_event_loop()
+
+        while True:
+            def get_next_batch():
+                try:
+                    return next(gen), False
+                except StopIteration:
+                    return None, True
+
+            batch_info, is_stop = await loop.run_in_executor(None, get_next_batch)
+            if is_stop:
+                break
+            yield batch_info
+
+        logger.info("✓ [Batch Streaming] Voice Design 批量流式生成完成")
 
     # ========== Voice Clone 模式 ==========
 
@@ -1016,6 +1230,101 @@ class QwenEngine:
 
         logger.info("✓ [Streaming] 流式生成完成")
 
+    async def voice_clone_batch_stream_synthesize_async(
+        self,
+        texts: List[str],
+        clone_prompt,
+        language: str = "Auto",
+        emit_every_frames: int = 8,
+        decode_window_frames: int = 80,
+        first_chunk_emit_every: int = 5,
+        first_chunk_decode_window: int = 48,
+        first_chunk_frames: int = 48,
+        **kwargs
+    ) -> AsyncGenerator[Tuple[List[np.ndarray], int], None]:
+        """
+        Voice Clone 批量流式生成
+
+        使用 qwen-tts 的原生 batch_stream_generate_voice_clone 方法，
+        实现多个文本的并行流式生成。所有文本共享 KV cache，同步推进。
+
+        Args:
+            texts: 文本列表
+            clone_prompt: VoiceClonePromptItem 或 List[VoiceClonePromptItem]
+            language: 语言（广播到所有文本）
+            emit_every_frames: 音频块发射间隔（帧）
+            decode_window_frames: 解码窗口大小（帧）
+            first_chunk_emit_every: 首块发射间隔
+            first_chunk_decode_window: 首块解码窗口
+            first_chunk_frames: 首块帧数
+            **kwargs: 其他参数
+
+        Yields:
+            Tuple[List[np.ndarray], int]: (每个文本的音频块列表, 采样率)
+                - 每个 yield 返回所有文本当前生成的音频块
+                - 已完成的文本返回空数组
+        """
+        if not self.model:
+            raise TTSModelNotLoadedError("模型未加载")
+
+        # 确保使用流式优化
+        await self._ensure_optimization_mode("streaming")
+
+        if not texts:
+            return
+
+        # 验证文本
+        for i, text in enumerate(texts):
+            if not text or not text.strip():
+                raise TTSInvalidParameterError(f"文本 {i+1} 为空")
+
+        logger.info(f"[Batch Streaming] 正在批量流式生成 {len(texts)} 个文本...")
+
+        # 转换 clone_prompt 为 VoiceClonePromptItem 列表
+        prompt_items = self._convert_prompt_to_prompt_items(clone_prompt)
+
+        # 确保模型支持批量流式（必须是 Base 模型）
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'tts_model_type'):
+            if self.model.model.tts_model_type != "base":
+                raise TTSError(
+                    f"批量流式推理仅支持 Base 模型，当前模型类型: {self.model.model.tts_model_type}"
+                )
+
+        def batch_stream_generator() -> Generator[Tuple[List[np.ndarray], int], None, None]:
+            """同步批量流式生成器"""
+            for chunks_list, sr in self.model.batch_stream_generate_voice_clone(
+                text=texts,
+                language=language,
+                voice_clone_prompt=prompt_items[0] if len(prompt_items) == 1 else prompt_items,
+                emit_every_frames=emit_every_frames,
+                decode_window_frames=decode_window_frames,
+                first_chunk_emit_every=first_chunk_emit_every,
+                first_chunk_decode_window=first_chunk_decode_window,
+                first_chunk_frames=first_chunk_frames,
+            ):
+                # 过滤全空的块
+                has_content = any(chunk.size > 0 for chunk in chunks_list)
+                if has_content:
+                    yield chunks_list, sr
+
+        # 异步迭代
+        gen = batch_stream_generator()
+        loop = asyncio.get_event_loop()
+
+        while True:
+            def get_next_batch():
+                try:
+                    return next(gen), False
+                except StopIteration:
+                    return None, True
+
+            batch_info, is_stop = await loop.run_in_executor(None, get_next_batch)
+            if is_stop:
+                break
+            yield batch_info
+
+        logger.info("✓ [Batch Streaming] 批量流式生成完成")
+
     def create_voice_clone_prompt(
         self,
         ref_audio: str,
@@ -1120,15 +1429,15 @@ class QwenEngine:
             del self.model
             self.model = None
 
-            # 清理 CUDA 缓存（如果使用 CUDA）
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                logger.info("✓ CUDA 缓存已清理")
-
             logger.info("✓ TTS 模型已卸载")
 
         except Exception as e:
             logger.error(f"✗ 模型卸载失败: {str(e)}")
+        finally:
+            # 无论卸载成功与否，都尝试清理 CUDA 缓存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("✓ CUDA 缓存已清理")
 
     # ========== 辅助方法 ==========
 

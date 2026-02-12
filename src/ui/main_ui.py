@@ -160,6 +160,10 @@ class PhantomUI:
             on_close=self._on_close_window
         )
 
+        # 设置窗口事件拦截
+        self.page.window.prevent_close = True
+        self.page.window.on_event = self._window_event
+
         # 创建 UI 组件
         self._create_ui_components()
 
@@ -453,8 +457,25 @@ class PhantomUI:
         old_index = self._current_view_index
         self._current_view_index = e.control.selected_index
 
-        # 如果切换到不同的语音相关页面，清空当前模型ID以重新加载
+        # PDCA 循环 #1 修复: 集中管理 FloatingActionButton
+        # 根据当前视图索引设置对应的 FAB，解决视图切换时 FAB 不匹配的问题
         voice_pages = {0, 1, 2}  # Custom Voice, Voice Design, Voice Clone
+        if self._current_view_index not in voice_pages:
+            # 非语音页面，隐藏 FAB
+            self.page.floating_action_button = None
+        else:
+            # 语音页面，设置对应视图的 FAB
+            if self._current_view_index == 0:
+                fab = self.custom_voice_view._fab if self.custom_voice_view else None
+            elif self._current_view_index == 1:
+                fab = self.voice_design_view._fab if self.voice_design_view else None
+            elif self._current_view_index == 2:
+                fab = self.voice_clone_view._fab if self.voice_clone_view else None
+            else:
+                fab = None
+            self.page.floating_action_button = fab
+
+        # 如果切换到不同的语音相关页面，清空当前模型ID以重新加载
         if old_index in voice_pages and self._current_view_index in voice_pages:
             # 清空模型ID，强制重新加载合适的模型
             self._current_model_id = None
@@ -502,6 +523,20 @@ class PhantomUI:
             self.content_area.controls.append(view)
 
         self.content_area.update()
+
+        # PDCA 循环 #1 修复: 更新 FAB（视图可能刚刚初始化）
+        # 确保在视图创建后设置正确的 FAB
+        voice_pages = {0, 1, 2}
+        if self._current_view_index in voice_pages:
+            if self._current_view_index == 0:
+                fab = self.custom_voice_view._fab if self.custom_voice_view else None
+            elif self._current_view_index == 1:
+                fab = self.voice_design_view._fab if self.voice_design_view else None
+            elif self._current_view_index == 2:
+                fab = self.voice_clone_view._fab if self.voice_clone_view else None
+            else:
+                fab = None
+            self.page.floating_action_button = fab
 
         # 在页面更新后刷新模型下拉框（需要在控件添加到页面后）
         if self._current_view_index == 0:
@@ -840,66 +875,96 @@ class PhantomUI:
             logger.exception("主题切换失败")
             self.terminal.add_log(f"✗ 主题切换失败: {str(e)}")
 
+    def _window_event(self, e):
+        """
+        处理窗口事件（拦截关闭事件）
+        """
+        if e.data == "close":
+            # 拦截关闭事件，显示确认对话框
+            self._on_close_window(e)
+
+    async def _do_cleanup_and_close(self):
+        """执行清理操作并关闭窗口"""
+        try:
+            # 1. 先隐藏窗口（立即响应用户）
+            try:
+                self.page.window.visible = False
+                self.page.update()
+            except RuntimeError:
+                pass
+
+            # 2. 卸载 TTS 引擎（释放显存）
+            try:
+                if self._tts_engine:
+                    self._tts_engine.unload()
+                    self._tts_engine = None
+                    logger.info("TTS 引擎已卸载")
+            except Exception as engine_err:
+                logger.warning(f"卸载 TTS 引擎时出错: {engine_err}")
+
+            # 3. 关闭系统监控
+            try:
+                if hasattr(self, 'system_monitor') and self.system_monitor:
+                    await self.system_monitor.stop_monitoring()
+                    logger.info("系统监控已停止")
+            except Exception as monitor_err:
+                logger.warning(f"停止系统监控时出错: {monitor_err}")
+
+            # 4. 关闭 TTS 线程池
+            try:
+                from src.tts.thread_pool_manager import TTSThreadPoolManager
+                TTSThreadPoolManager().shutdown(wait=True)
+                logger.info("TTS线程池已关闭")
+            except Exception as thread_pool_err:
+                logger.warning(f"关闭TTS线程池时出错: {thread_pool_err}")
+
+            # 5. 保存配置
+            try:
+                self.config_manager.save_config()
+                logger.info("配置已保存")
+            except Exception as config_err:
+                logger.warning(f"保存配置时出错: {config_err}")
+
+            # 6. 允许关闭并关闭窗口
+            try:
+                self.page.window.prevent_close = False
+                await self.page.window.close()
+            except RuntimeError:
+                pass
+        except Exception:
+            logger.exception("关闭应用时出错")
+            try:
+                await self.page.window.destroy()
+            except:
+                pass
+
     def _on_close_window(self, e):
         """
         处理窗口关闭事件，显示确认对话框
         """
-        async def close_app_async(dialog):
-            """异步关闭应用"""
+        async def confirm_close_async():
+            """确认关闭后的异步操作"""
             try:
                 # 关闭对话框
                 try:
                     self.page.pop_dialog()
                 except RuntimeError:
-                    # 会话已关闭，继续清理
                     pass
+            except:
+                pass
+            # 执行清理和关闭
+            await self._do_cleanup_and_close()
 
-                # 清理TTS线程池
-                try:
-                    from src.tts.thread_pool_manager import TTSThreadPoolManager
-                    TTSThreadPoolManager().shutdown(wait=True)
-                    logger.info("TTS线程池已关闭")
-                except Exception as thread_pool_err:
-                    logger.warning(f"关闭TTS线程池时出错: {thread_pool_err}")
+        def on_confirm(_):
+            """用户确认关闭"""
+            self.page.run_task(confirm_close_async)
 
-                # 清理系统监控线程
-                try:
-                    if hasattr(self, 'system_monitor') and self.system_monitor:
-                        await self.system_monitor.stop_monitoring()
-                        logger.info("系统监控已停止")
-                except Exception as monitor_err:
-                    logger.warning(f"停止系统监控时出错: {monitor_err}")
-
-                # 保存配置
-                self.config_manager.save_config()
-
-                # 隐藏窗口（立即响应）
-                try:
-                    self.page.window.visible = False
-                    self.page.window.prevent_close = False
-                    self.page.update()
-                except RuntimeError:
-                    # 会话已关闭，继续清理
-                    pass
-
-                # 关闭窗口
-                try:
-                    await self.page.window.close()
-                except RuntimeError as e:
-                    # 如果是会话已关闭错误，这是正常的，不需要记录
-                    if "Session closed" not in str(e):
-                        raise
-            except Exception as ex:
-                logger.exception("关闭应用时出错")
-                try:
-                    await self.page.window.destroy()
-                except:
-                    pass
-
-        def confirm_close(dialog):
-            """确认关闭操作"""
-            # 使用 run_task 执行异步关闭操作
-            self.page.run_task(close_app_async, dialog)
+        def on_cancel(_):
+            """用户取消关闭"""
+            try:
+                self.page.pop_dialog()
+            except:
+                pass
 
         # 显示确认对话框
         dialog = ft.AlertDialog(
@@ -907,14 +972,8 @@ class PhantomUI:
             title=ft.Text("确认退出"),
             content=ft.Text("确定要退出 PhantomVox 吗？"),
             actions=[
-                ft.TextButton(
-                    "取消",
-                    on_click=lambda _: self.page.pop_dialog()
-                ),
-                ft.TextButton(
-                    "退出",
-                    on_click=lambda _: confirm_close(dialog)
-                ),
+                ft.TextButton("取消", on_click=on_cancel),
+                ft.TextButton("退出", on_click=on_confirm),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )

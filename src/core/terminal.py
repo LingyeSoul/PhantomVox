@@ -381,23 +381,35 @@ class AsyncTerminal:
         - 只在无任务执行时才提交新任务
         - 任务完成后在finally块中清除标志
 
+        PDCA Cycle 2 FIX (2026-02-12):
+        问题：get_logs() 在 _render_pending 检查之前被调用，如果 _render_pending
+             为 True，日志会被获取但不会被渲染，导致日志丢失。
+        解决方案：
+        - 将 _render_pending 检查移到 get_logs() 之前
+        - 避免日志在无法渲染时被"消费"
+
         效果：
         - 100条日志只触发1个UI任务（修复前可能触发数十个）
         - 日志平滑显示，无突发
         - 无UI任务队列积压
+        - 无日志丢失
         """
-        # 快速检查：没有新日志则直接返回
-        logs_to_render = self.log_buffer.get_logs()
-        if not logs_to_render:
-            return
-
-        # 检查是否有渲染任务正在执行或等待
+        # 先检查是否有渲染任务正在执行或等待
+        # 必须在 get_logs() 之前检查，否则日志会被"消费"但不会渲染
         with self._render_lock:
             if self._render_pending:
                 # 已有任务在队列中或正在执行，跳过本次渲染
                 return
             # 标记渲染任务为待执行状态
             self._render_pending = True
+
+        # 然后再获取日志（此时 _read_position 才会更新）
+        logs_to_render = self.log_buffer.get_logs()
+        if not logs_to_render:
+            # 没有日志需要渲染，清除标志
+            with self._render_lock:
+                self._render_pending = False
+            return
 
         # 提交到UI线程
         async def render_task():

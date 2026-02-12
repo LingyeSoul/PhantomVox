@@ -8,11 +8,16 @@ import flet as ft
 import logging
 import asyncio
 import os
+import time
+import numpy as np
+import torch
 
-from ui.components.shared_controls import create_generate_button, create_header_with_button, create_labeled_control
+from ui.components.shared_controls import create_labeled_control
 from ui.components.audio_progress_bar import AudioProgressBar
 from ui.components.voice_library import VoiceLibrary
 from tts.audio_temp_manager import AudioTempManager
+from tts.text_splitter import smart_split
+from utils.time_utils import format_elapsed_time
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +208,17 @@ class CustomVoiceView(ft.Container):
         # 音频临时文件管理器
         self._audio_temp_manager = AudioTempManager()
 
+        # 创建 FloatingActionButton（由 main_ui 集中管理）
+        self._fab = ft.FloatingActionButton(
+            icon=ft.Icons.SEND,
+            bgcolor=ft.Colors.BLUE,
+            on_click=self._on_generate,
+            tooltip="生成语音",
+        )
+        # PDCA 循环 #1 修复: 不在 __init__ 中设置 page.floating_action_button
+        # 原因: 视图是延迟初始化并缓存的，切换视图时 __init__ 不会再次调用
+        # 修复: 由 main_ui.on_navigation_change 集中管理 FAB 切换
+
         # 构建UI
         super().__init__(
             content=self._build_ui(),
@@ -307,6 +323,82 @@ class CustomVoiceView(ft.Container):
             on_clear=self._on_clear_text
         )
 
+        # 批量推理控件
+        self.batch_streaming_switch = ft.Switch(
+            label="",
+            value=False,
+            on_change=self._on_batch_streaming_toggle
+        )
+
+        self.batch_size_input = ft.TextField(
+            label="分批大小",
+            value="16",
+            width=100,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei", size=12),
+        )
+
+        self.split_mode_dropdown = ft.Dropdown(
+            label="分割模式",
+            options=[
+                ft.dropdown.Option("multiline", "按行分割"),
+                ft.dropdown.Option("sentence", "按句分割"),
+            ],
+            value="multiline",
+            width=120,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei", size=12),
+        )
+
+        self.batch_progress_text = ft.Text("", size=12, visible=False)
+        self.batch_progress_bar = ft.ProgressBar(value=0, visible=False, bar_height=4)
+
+        # 高级选项 ExpansionTile
+        self.advanced_options_tile = ft.ExpansionTile(
+            title=ft.Text("高级选项", size=14, weight=ft.FontWeight.BOLD),
+            subtitle=ft.Text("配置生成参数", size=12),
+            collapsed_bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+            bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+            controls_padding=ft.Padding.all(10),
+            controls=[
+                # 这里可以添加高级参数控件
+                ft.ListTile(
+                    title=ft.Text("采样率", size=13),
+                    trailing=ft.Dropdown(
+                        options=[
+                            ft.dropdown.Option("24000", "24000 Hz"),
+                        ],
+                        value="24000",
+                        width=120,
+                        text_style=ft.TextStyle(font_family="Microsoft YaHei", size=12),
+                    ),
+                )
+            ],
+        )
+
+        # 批量推理 ExpansionTile
+        self.batch_inference_tile = ft.ExpansionTile(
+            title=ft.Text("批量推理", size=14, weight=ft.FontWeight.BOLD),
+            subtitle=ft.Text("批量生成多个语音", size=12),
+            collapsed_bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+            bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+            controls_padding=ft.Padding.all(10),
+            controls=[
+                ft.Column([
+                    ft.Row([
+                        ft.Text("启用", size=13),
+                        self.batch_streaming_switch,
+                        ft.Text("分批大小:", size=13),
+                        self.batch_size_input,
+                    ], alignment=ft.MainAxisAlignment.START, spacing=10),
+                    create_labeled_control("分割模式", self.split_mode_dropdown),
+                    ft.Text("按行分割: 每行一个文本\n按句分割: 自动识别句子边界", size=11,
+                           color=ft.Colors.with_opacity(0.7, ft.Colors.ON_SURFACE)),
+                    self.batch_progress_text,
+                    self.batch_progress_bar,
+                ], spacing=5),
+            ],
+        )
+
         # 音频控制面板
         self.audio_control = AudioControlPanel(
             on_play=self._on_play,
@@ -379,23 +471,36 @@ class CustomVoiceView(ft.Container):
             width=380
         )
 
+        # 左侧面板卡片
+        left_panel = ft.Container(
+            content=ft.Column([
+                # 模型选择
+                create_labeled_control("模型选择", self.model_dropdown),
+
+                ft.Divider(),
+
+                ft.Text("文本输入", size=16, weight=ft.FontWeight.BOLD),
+                self.text_panel,
+
+                ft.Divider(),
+
+                # 高级选项
+                self.advanced_options_tile,
+
+                # 批量推理
+                self.batch_inference_tile,
+            ], spacing=10, scroll=ft.ScrollMode.AUTO),
+            padding=20,
+            bgcolor=ft.Colors.with_opacity(0.03, ft.Colors.ON_SURFACE),
+            border_radius=12,
+            expand=True
+        )
+
         # 主布局
         return ft.Row(
             [
                 # 左侧文本输入区
-                ft.Container(
-                    content=ft.Column([
-                        # 模型选择
-                        create_labeled_control("模型选择", self.model_dropdown),
-
-                        ft.Divider(),
-
-                        create_header_with_button("文本输入", self._on_generate),
-                        self.text_panel,
-                    ], spacing=10),
-                    padding=10,
-                    expand=True
-                ),
+                left_panel,
 
                 # 右侧控制面板
                 control_panel
@@ -452,6 +557,10 @@ class CustomVoiceView(ft.Container):
         """清空文本"""
         self.text_panel.clear()
 
+    def _on_batch_streaming_toggle(self, e):
+        """批量推理开关切换"""
+        pass
+
     async def _on_generate(self, e):
         """生成语音按钮点击事件"""
         if self._is_generating:
@@ -466,7 +575,16 @@ class CustomVoiceView(ft.Container):
             ))
             return
 
+        # 检查是否启用批量模式
+        if self.batch_streaming_switch.value:
+            await self._on_generate_with_batch(text)
+        else:
+            await self._on_generate_single(text)
+
+    async def _on_generate_single(self, text: str):
+        """单个文本生成"""
         self._is_generating = True
+        start_time = time.perf_counter()  # 开始计时
         self.terminal.add_log("正在生成语音...")
 
         # 强制UI更新，让第一条日志立即显示
@@ -535,6 +653,191 @@ class CustomVoiceView(ft.Container):
 
         finally:
             self._is_generating = False
+            elapsed_time = time.perf_counter() - start_time
+            time_str = format_elapsed_time(elapsed_time)
+            self.terminal.add_log(f"✓ 语音生成完成 (用时: {time_str})")
+
+    async def _on_generate_with_batch(self, text: str):
+        """批量模式生成语音"""
+        if self._is_generating:
+            return
+
+        self._is_generating = True
+        start_time = time.perf_counter()
+
+        try:
+            # 获取分割模式
+            split_mode = self.split_mode_dropdown.value
+            language = self.language_dropdown.value
+
+            # 分割文本
+            texts = smart_split(text, mode=split_mode, language="chinese")
+            if not texts:
+                self._page.show_dialog(ft.SnackBar(
+                    ft.Text("没有有效的文本可生成"),
+                    bgcolor=ft.Colors.RED
+                ))
+                return
+
+            # 获取分批大小（限制范围 1-64，防止显存溢出）
+            try:
+                batch_size = int(self.batch_size_input.value)
+                if batch_size < 1 or batch_size > 64:
+                    batch_size = 16
+            except ValueError:
+                batch_size = 16
+
+            # 保存配置
+            self.config_manager.set("custom_voice.default_language", language)
+
+            # 获取 TTS 引擎
+            tts_engine = await self.tts_engine_getter()
+
+            # 执行批量生成
+            await self._on_generate_batch(texts, tts_engine, batch_size)
+
+        except Exception as e:
+            logger.error(f"批量生成失败: {str(e)}", exc_info=True)
+            self.terminal.add_log(f"✗ 批量生成失败: {str(e)}")
+            self._page.show_dialog(ft.SnackBar(
+                ft.Text(f"批量生成失败: {str(e)}"),
+                bgcolor=ft.Colors.RED
+            ))
+        finally:
+            self._is_generating = False
+            elapsed_time = time.perf_counter() - start_time
+            time_str = format_elapsed_time(elapsed_time)
+            self.terminal.add_log(f"✓ 批量生成完成 (用时: {time_str})")
+
+    async def _on_generate_batch(
+        self,
+        texts: list,
+        tts_engine,
+        batch_size: int = 16
+    ):
+        """
+        批量流式生成语音（支持分批处理以控制显存占用）
+
+        Args:
+            texts: 文本列表
+            tts_engine: TTS 引擎
+            batch_size: 每批最大文本数（控制显存占用）
+        """
+        total = len(texts)
+        self.terminal.add_log(f"开始批量生成 {total} 个文本（每批最多 {batch_size} 个）...")
+
+        # 显示进度
+        self.batch_progress_text.visible = True
+        self.batch_progress_bar.visible = True
+        self.batch_progress_text.value = f"准备生成 {total} 个文本..."
+        self.batch_progress_bar.value = 0
+        self._page.update()
+
+        # 存储每个文本的音频块
+        item_chunks = [[] for _ in range(len(texts))]
+        sample_rate = 24000
+
+        # 分批处理
+        num_batches = (total + batch_size - 1) // batch_size
+        global_completed = 0
+
+        try:
+            for batch_idx in range(num_batches):
+                batch_start = batch_idx * batch_size
+                batch_end = min(batch_start + batch_size, total)
+                batch_texts = texts[batch_start:batch_end]
+                batch_num = batch_idx + 1
+
+                self.terminal.add_log(f"处理第 {batch_num}/{num_batches} 批 (文本 {batch_start+1}-{batch_end})...")
+
+                # 追踪当前批次每个文本的状态
+                item_started = [False] * len(batch_texts)
+                item_completed = [False] * len(batch_texts)
+
+                # 获取参数
+                speaker = self.speaker_dropdown.value
+                language = self.language_dropdown.value
+                instruct = self.instruct_input.value or ""
+
+                chunk_count = 0
+                async for chunks_list, sr in tts_engine.custom_voice_batch_stream_synthesize_async(
+                    texts=batch_texts,
+                    speaker=speaker,
+                    language=language,
+                    instruct=instruct,
+                ):
+                    sample_rate = sr
+                    chunk_count += 1
+
+                    # 累积每个文本的音频块，并追踪完成状态
+                    for i, chunk in enumerate(chunks_list):
+                        global_idx = batch_start + i
+                        if chunk.size > 0:
+                            item_chunks[global_idx].append(chunk)
+                            item_started[i] = True
+                        elif item_started[i] and not item_completed[i]:
+                            item_completed[i] = True
+
+                    # 计算当前批次进度
+                    batch_completed = sum(item_completed)
+
+                    # 计算全局进度
+                    global_completed = batch_start + batch_completed
+                    progress = global_completed / total
+
+                    self.batch_progress_text.value = f"批次 {batch_num}/{num_batches} - 已完成 {global_completed}/{total}"
+                    self.batch_progress_bar.value = progress
+                    self._page.update()
+
+            # 合并每个文本的完整音频
+            self.terminal.add_log("正在合并音频...")
+            combined_audios = []
+            for i, chunks in enumerate(item_chunks):
+                if chunks:
+                    # 过滤掉空数组
+                    non_empty_chunks = [c for c in chunks if c.size > 0]
+                    if non_empty_chunks:
+                        combined = np.concatenate(non_empty_chunks)
+                        combined_audios.append(combined)
+                        self.terminal.add_log(f"  文本 {i+1}: {len(combined)/sample_rate:.2f}s")
+
+            # 合并所有音频为一个文件
+            if combined_audios:
+                final_audio = np.concatenate(combined_audios)
+                self._last_audio = (final_audio, sample_rate)
+
+                if self._temp_audio_file:
+                    self._audio_temp_manager.cleanup_file(self._temp_audio_file)
+
+                self._temp_audio_file = self._audio_temp_manager.save_audio(
+                    final_audio, sample_rate, prefix="batch"
+                )
+
+                self.batch_progress_text.value = f"✓ 批量生成完成: {total} 个文本, 总时长 {len(final_audio)/sample_rate:.2f}s"
+                self.batch_progress_bar.value = 1.0
+
+                self.terminal.add_log(f"✓ 批量语音生成成功: {total} 个文本")
+
+                # 更新音频控制状态并播放
+                self.audio_control.update_audio_state(True)
+                await self._on_play(None)
+            else:
+                self.batch_progress_text.value = "✗ 生成失败: 没有有效的音频"
+                self.terminal.add_log("✗ 批量生成失败: 没有生成任何音频")
+
+        except Exception as e:
+            logger.error(f"批量生成失败: {str(e)}", exc_info=True)
+            self.batch_progress_text.value = f"✗ 生成失败: {str(e)}"
+            self.terminal.add_log(f"✗ 批量生成失败: {str(e)}")
+            raise
+        finally:
+            # 清理显存
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    self.terminal.add_log("已清理 GPU 显存")
+            except Exception as cleanup_error:
+                logger.warning(f"清理 GPU 显存失败: {cleanup_error}")
 
     async def _on_play(self, e):
         """播放音频"""

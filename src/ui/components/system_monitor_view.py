@@ -100,38 +100,42 @@ class SystemMonitorView:
             if not torch.cuda.is_available():
                 return 0.0, 0.0
 
-            # 获取 GPU 使用率（使用 pynvml）
+            # 获取 GPU 使用率和显存使用率（使用 pynvml）
             gpu_percent = 0.0
+            vram_percent = 0.0
+
             try:
                 import pynvml
                 pynvml.nvmlInit()
                 try:
                     handle = pynvml.nvmlDeviceGetHandleByIndex(0)
                     gpu_percent = pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
+
+                    # 使用 pynvml 获取显存信息（更准确，包含所有进程）
+                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    vram_percent = (mem_info.used / mem_info.total * 100) if mem_info.total > 0 else 0.0
                 finally:
-                    # 确保无论如何都会关闭 NVML
                     pynvml.nvmlShutdown()
             except ImportError:
-                # 如果 pynvml 不可用，尝试使用 torch.cuda.utilization()
+                # pynvml 不可用，回退到 torch
                 try:
                     if hasattr(torch.cuda, 'utilization'):
                         gpu_percent = torch.cuda.utilization()
+                    vram_allocated = torch.cuda.memory_allocated()
+                    vram_total = torch.cuda.get_device_properties(0).total_memory
+                    vram_percent = (vram_allocated / vram_total * 100) if vram_total > 0 else 0.0
                 except Exception:
                     pass
             except Exception:
-                # pynvml 调用失败，尝试 torch.cuda.utilization()
+                # pynvml 调用失败，回退到 torch
                 try:
                     if hasattr(torch.cuda, 'utilization'):
                         gpu_percent = torch.cuda.utilization()
+                    vram_allocated = torch.cuda.memory_allocated()
+                    vram_total = torch.cuda.get_device_properties(0).total_memory
+                    vram_percent = (vram_allocated / vram_total * 100) if vram_total > 0 else 0.0
                 except Exception:
                     pass
-
-            # 获取显存使用率（使用 torch.cuda）
-            vram_allocated = torch.cuda.memory_allocated() / (1024 ** 3)  # GB
-            vram_reserved = torch.cuda.memory_reserved() / (1024 ** 3)  # GB
-            vram_total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)  # GB
-
-            vram_percent = (vram_allocated / vram_total * 100) if vram_total > 0 else 0.0
 
             return gpu_percent, vram_percent
         except Exception:
@@ -161,18 +165,33 @@ class SystemMonitorView:
         self.gpu_progress.value = gpu_percent / 100 if self._cuda_available else 0
         self.vram_progress.value = vram_percent / 100 if self._cuda_available else 0
 
+        # 检查监控是否仍在运行
+        if not self._monitoring:
+            return
+
         # 更新页面
         try:
-            self.page.update()
-        except RuntimeError as e:
-            # 页面已关闭，停止监控
-            logger.warning(f"系统监控更新失败，页面可能已关闭: {e}")
+            # 检查页面是否有效
+            if self.page and hasattr(self.page, 'session') and self.page.session:
+                self.page.update()
+            else:
+                # 页面会话已失效，停止监控
+                self._monitoring = False
+        except RuntimeError:
+            # 页面已关闭，停止监控（静默处理）
+            self._monitoring = False
+        except Exception:
+            # 捕获其他异常（如连接重置等，静默处理）
             self._monitoring = False
 
     async def _monitor_loop(self):
         """监控循环（异步执行，在主线程中运行）"""
         while self._monitoring:
-            self._update_monitor()
+            try:
+                self._update_monitor()
+            except Exception as e:
+                logger.debug(f"监控更新异常: {e}")
+                break
             await asyncio.sleep(self.update_interval)
 
     def start_monitoring(self):
@@ -184,7 +203,9 @@ class SystemMonitorView:
 
     async def stop_monitoring(self):
         """停止监控"""
+        # 先设置标志位，让循环自然退出
         self._monitoring = False
+
         if self._monitor_task and not self._monitor_task.done():
             # 取消异步任务
             self._monitor_task.cancel()
@@ -192,6 +213,8 @@ class SystemMonitorView:
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass  # 任务被取消是预期的
+            except Exception as e:
+                logger.debug(f"停止监控任务时出现异常: {e}")
 
     def build(self) -> ft.Container:
         """

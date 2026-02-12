@@ -320,6 +320,159 @@ class BaseEngineProxy:
         async for chunk, sr in stream_gen:
             yield chunk, sr
 
+    async def voice_clone_batch_stream_synthesize_async(
+        self,
+        texts: list,
+        clone_prompt,
+        language: str = "Auto",
+        emit_every_frames: int = 8,
+        decode_window_frames: int = 80,
+        first_chunk_emit_every: int = 5,
+        first_chunk_decode_window: int = 48,
+        first_chunk_frames: int = 48,
+        **kwargs
+    ) -> AsyncGenerator[Tuple[list, int], None]:
+        """
+        Voice Clone 批量流式合成
+
+        Args:
+            texts: 要合成的文本列表
+            clone_prompt: 克隆提示词
+            language: 语言
+            emit_every_frames: 每隔多少帧发射一次
+            decode_window_frames: 解码窗口帧数
+            first_chunk_emit_every: 首块发射间隔
+            first_chunk_decode_window: 首块解码窗口
+            first_chunk_frames: 首块帧数
+            **kwargs: 其他参数
+
+        Yields:
+            Tuple[list, int]: (每个文本的音频块列表, 采样率)
+        """
+        self._log(f"提交批量流式 Voice Clone 任务: {len(texts)} 个文本")
+
+        engine = self._get_engine()
+        stream_gen = await self._task_engine.submit_streaming(
+            task_type=TaskType.GENERATE,
+            func=engine.voice_clone_batch_stream_synthesize_async,
+            args=(texts, clone_prompt),
+            kwargs={
+                "language": language,
+                "emit_every_frames": emit_every_frames,
+                "decode_window_frames": decode_window_frames,
+                "first_chunk_emit_every": first_chunk_emit_every,
+                "first_chunk_decode_window": first_chunk_decode_window,
+                "first_chunk_frames": first_chunk_frames,
+                **kwargs
+            },
+            description=f"批量流式 Voice Clone: {len(texts)} 个文本"
+        )
+
+        async for chunks_list, sr in stream_gen:
+            yield chunks_list, sr
+
+    async def custom_voice_batch_stream_synthesize_async(
+        self,
+        texts: list,
+        speaker: str = "Vivian",
+        language: str = "Chinese",
+        instruct: str = "",
+        emit_every_frames: int = 8,
+        decode_window_frames: int = 80,
+        first_chunk_emit_every: int = 5,
+        first_chunk_decode_window: int = 48,
+        first_chunk_frames: int = 48,
+        **kwargs
+    ) -> AsyncGenerator[Tuple[list, int], None]:
+        """
+        Custom Voice 批量流式合成
+
+        Args:
+            texts: 要合成的文本列表
+            speaker: 说话人名称
+            language: 语言
+            instruct: 指令文本
+            emit_every_frames: 每隔多少帧发射一次
+            decode_window_frames: 解码窗口帧数
+            first_chunk_emit_every: 首块发射间隔
+            first_chunk_decode_window: 首块解码窗口
+            first_chunk_frames: 首块帧数
+            **kwargs: 其他参数
+
+        Yields:
+            Tuple[list, int]: (每个文本的音频块列表, 采样率)
+        """
+        self._log(f"提交批量流式 Custom Voice 任务: {len(texts)} 个文本")
+
+        engine = self._get_engine()
+        stream_gen = await self._task_engine.submit_streaming(
+            task_type=TaskType.GENERATE,
+            func=engine.custom_voice_batch_stream_synthesize_async,
+            args=(texts, speaker, language, instruct),
+            kwargs={
+                "emit_every_frames": emit_every_frames,
+                "decode_window_frames": decode_window_frames,
+                "first_chunk_emit_every": first_chunk_emit_every,
+                "first_chunk_decode_window": first_chunk_decode_window,
+                "first_chunk_frames": first_chunk_frames,
+                **kwargs
+            },
+            description=f"批量流式 Custom Voice: {len(texts)} 个文本"
+        )
+
+        async for chunks_list, sr in stream_gen:
+            yield chunks_list, sr
+
+    async def voice_design_batch_stream_synthesize_async(
+        self,
+        texts: list,
+        design_prompt: str,
+        language: str = "Chinese",
+        emit_every_frames: int = 8,
+        decode_window_frames: int = 80,
+        first_chunk_emit_every: int = 5,
+        first_chunk_decode_window: int = 48,
+        first_chunk_frames: int = 48,
+        **kwargs
+    ) -> AsyncGenerator[Tuple[list, int], None]:
+        """
+        Voice Design 批量流式合成
+
+        Args:
+            texts: 要合成的文本列表
+            design_prompt: 设计提示词
+            language: 语言
+            emit_every_frames: 每隔多少帧发射一次
+            decode_window_frames: 解码窗口帧数
+            first_chunk_emit_every: 首块发射间隔
+            first_chunk_decode_window: 首块解码窗口
+            first_chunk_frames: 首块帧数
+            **kwargs: 其他参数
+
+        Yields:
+            Tuple[list, int]: (每个文本的音频块列表, 采样率)
+        """
+        self._log(f"提交批量流式 Voice Design 任务: {len(texts)} 个文本")
+
+        engine = self._get_engine()
+        stream_gen = await self._task_engine.submit_streaming(
+            task_type=TaskType.GENERATE,
+            func=engine.voice_design_batch_stream_synthesize_async,
+            args=(texts, design_prompt, language),
+            kwargs={
+                "emit_every_frames": emit_every_frames,
+                "decode_window_frames": decode_window_frames,
+                "first_chunk_emit_every": first_chunk_emit_every,
+                "first_chunk_decode_window": first_chunk_decode_window,
+                "first_chunk_frames": first_chunk_frames,
+                **kwargs
+            },
+            description=f"批量流式 Voice Design: {len(texts)} 个文本"
+        )
+
+        async for chunks_list, sr in stream_gen:
+            yield chunks_list, sr
+
     # ========== 引擎管理方法 ==========
 
     async def unload_async(self):

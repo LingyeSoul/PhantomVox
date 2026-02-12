@@ -5,7 +5,6 @@ PhantomVox - 基于 Qwen3-TTS 的文本转语音应用
 """
 
 import flet as ft
-import asyncio
 import logging
 import sys
 import os
