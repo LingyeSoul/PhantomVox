@@ -142,18 +142,6 @@ class VoiceCloneView(BaseVoiceView):
                 self.ref_text_input,
             ], spacing=5),
         ]
-
-    def _on_batch_streaming_toggle(self, e):
-        """批量推理开关切换事件"""
-        enabled = e.control.value
-        self.batch_progress_text.visible = enabled
-        self.batch_progress_bar.visible = enabled
-        if enabled:
-            self.batch_progress_text.value = "准备就绪"
-            self.batch_progress_bar.value = 0
-        self._page.update()
-        self.terminal.add_log(f"批量推理: {'已启用' if enabled else '已禁用'}")
-
     async def _on_generate_single_impl(self, text: str, tts_engine):
         """单个文本生成的具体实现"""
         clone_mode = self.use_saved_clone_radio.value

@@ -111,8 +111,15 @@ class BaseVoiceView(ft.Container):
     # ==================== 可选覆盖的方法 ====================
 
     def _on_batch_streaming_toggle(self, e):
-        """批量推理开关切换（子类可覆盖）"""
-        pass
+        """批量推理开关切换事件"""
+        enabled = e.control.value
+        self.batch_progress_text.visible = enabled
+        self.batch_progress_bar.visible = enabled
+        if enabled:
+            self.batch_progress_text.value = "准备就绪"
+            self.batch_progress_bar.value = 0
+        self._page.update()
+        self.terminal.add_log(f"批量推理: {'已启用' if enabled else '已禁用'}")
 
     # ==================== UI 构建 ====================
 
