@@ -779,9 +779,14 @@ class PhantomUI:
         rail = self.build_navigation_rail()
 
         # 创建内容区域 - 默认显示第一个导航页面（自定义语音）
+        initial_view = self._get_custom_voice_view()
         self.content_area = ft.Column([
-            self._get_custom_voice_view()
+            initial_view
         ], expand=True)
+
+        # 设置初始 FAB（修复程序启动时 FAB 不显示的 bug）
+        if self.custom_voice_view and hasattr(self.custom_voice_view, '_fab'):
+            self.page.floating_action_button = self.custom_voice_view._fab
 
         # 创建终端日志组件（用于 ExpansionTile 的 controls）
         self._terminal_logs_content = ft.Container(

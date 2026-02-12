@@ -87,6 +87,7 @@ async def main(page: ft.Page):
         page.update()
         page.window.width = 950
         page.window.height = 750
+        await page.window.to_front()
         page.update()
         app_logger.info("PhantomVox 启动成功")
 

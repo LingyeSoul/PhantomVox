@@ -13,6 +13,7 @@ from qwen_tts import Qwen3TTSModel
 from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
 import logging
 import os
+import gc
 import numpy as np
 import asyncio
 from typing import Tuple, Optional, AsyncGenerator, Dict, Any, Generator, List
@@ -693,22 +694,23 @@ class QwenEngine:
 
         def batch_stream_generator() -> Generator[Tuple[List[np.ndarray], int], None, None]:
             """同步批量流式生成器"""
-            for chunks_list, sr in self.model.model.batch_stream_generate_pcm(
-                input_ids=input_ids,
-                instruct_ids=instruct_ids,
-                speakers=[speaker],
-                languages=[language] * len(texts),
-                voice_clone_prompt=None,
-                emit_every_frames=emit_every_frames,
-                decode_window_frames=decode_window_frames,
-                first_chunk_emit_every=first_chunk_emit_every,
-                first_chunk_decode_window=first_chunk_decode_window,
-                first_chunk_frames=first_chunk_frames,
-            ):
-                # 过滤全空的块
-                has_content = any(chunk.size > 0 for chunk in chunks_list)
-                if has_content:
-                    yield chunks_list, sr
+            with torch.no_grad():  # 禁用梯度计算，减少显存占用
+                for chunks_list, sr in self.model.model.batch_stream_generate_pcm(
+                    input_ids=input_ids,
+                    instruct_ids=instruct_ids,
+                    speakers=[speaker],
+                    languages=[language] * len(texts),
+                    voice_clone_prompt=None,
+                    emit_every_frames=emit_every_frames,
+                    decode_window_frames=decode_window_frames,
+                    first_chunk_emit_every=first_chunk_emit_every,
+                    first_chunk_decode_window=first_chunk_decode_window,
+                    first_chunk_frames=first_chunk_frames,
+                ):
+                    # 过滤全空的块
+                    has_content = any(chunk.size > 0 for chunk in chunks_list)
+                    if has_content:
+                        yield chunks_list, sr
 
         # 异步迭代
         gen = batch_stream_generator()
@@ -922,22 +924,23 @@ class QwenEngine:
 
         def batch_stream_generator() -> Generator[Tuple[List[np.ndarray], int], None, None]:
             """同步批量流式生成器"""
-            for chunks_list, sr in self.model.model.batch_stream_generate_pcm(
-                input_ids=input_ids,
-                instruct_ids=instruct_ids,
-                speakers=None,  # Voice Design 不使用 speakers
-                languages=[language] * len(texts),
-                voice_clone_prompt=None,
-                emit_every_frames=emit_every_frames,
-                decode_window_frames=decode_window_frames,
-                first_chunk_emit_every=first_chunk_emit_every,
-                first_chunk_decode_window=first_chunk_decode_window,
-                first_chunk_frames=first_chunk_frames,
-            ):
-                # 过滤全空的块
-                has_content = any(chunk.size > 0 for chunk in chunks_list)
-                if has_content:
-                    yield chunks_list, sr
+            with torch.no_grad():  # 禁用梯度计算，减少显存占用
+                for chunks_list, sr in self.model.model.batch_stream_generate_pcm(
+                    input_ids=input_ids,
+                    instruct_ids=instruct_ids,
+                    speakers=None,  # Voice Design 不使用 speakers
+                    languages=[language] * len(texts),
+                    voice_clone_prompt=None,
+                    emit_every_frames=emit_every_frames,
+                    decode_window_frames=decode_window_frames,
+                    first_chunk_emit_every=first_chunk_emit_every,
+                    first_chunk_decode_window=first_chunk_decode_window,
+                    first_chunk_frames=first_chunk_frames,
+                ):
+                    # 过滤全空的块
+                    has_content = any(chunk.size > 0 for chunk in chunks_list)
+                    if has_content:
+                        yield chunks_list, sr
 
         # 异步迭代
         gen = batch_stream_generator()
@@ -1292,20 +1295,21 @@ class QwenEngine:
 
         def batch_stream_generator() -> Generator[Tuple[List[np.ndarray], int], None, None]:
             """同步批量流式生成器"""
-            for chunks_list, sr in self.model.batch_stream_generate_voice_clone(
-                text=texts,
-                language=language,
-                voice_clone_prompt=prompt_items[0] if len(prompt_items) == 1 else prompt_items,
-                emit_every_frames=emit_every_frames,
-                decode_window_frames=decode_window_frames,
-                first_chunk_emit_every=first_chunk_emit_every,
-                first_chunk_decode_window=first_chunk_decode_window,
-                first_chunk_frames=first_chunk_frames,
-            ):
-                # 过滤全空的块
-                has_content = any(chunk.size > 0 for chunk in chunks_list)
-                if has_content:
-                    yield chunks_list, sr
+            with torch.no_grad():  # 禁用梯度计算，减少显存占用
+                for chunks_list, sr in self.model.batch_stream_generate_voice_clone(
+                    text=texts,
+                    language=language,
+                    voice_clone_prompt=prompt_items[0] if len(prompt_items) == 1 else prompt_items,
+                    emit_every_frames=emit_every_frames,
+                    decode_window_frames=decode_window_frames,
+                    first_chunk_emit_every=first_chunk_emit_every,
+                    first_chunk_decode_window=first_chunk_decode_window,
+                    first_chunk_frames=first_chunk_frames,
+                ):
+                    # 过滤全空的块
+                    has_content = any(chunk.size > 0 for chunk in chunks_list)
+                    if has_content:
+                        yield chunks_list, sr
 
         # 异步迭代
         gen = batch_stream_generator()
@@ -1436,6 +1440,7 @@ class QwenEngine:
         finally:
             # 无论卸载成功与否，都尝试清理 CUDA 缓存
             if torch.cuda.is_available():
+                gc.collect()
                 torch.cuda.empty_cache()
                 logger.info("✓ CUDA 缓存已清理")
 

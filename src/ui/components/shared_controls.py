@@ -85,3 +85,153 @@ def create_labeled_control(label: str, control: Any, spacing: int = 5) -> ft.Col
         ft.Text(label, size=14, weight=ft.FontWeight.BOLD),
         control,
     ], spacing=spacing)
+
+
+def create_model_dropdown(
+    model_manager,
+    model_type: str,
+    on_change=None,
+    width: int = 200
+) -> ft.Dropdown:
+    """
+    创建模型选择下拉框
+
+    此函数提供统一的模型选择下拉框样式和逻辑。
+
+    Args:
+        model_manager: 模型管理器实例
+        model_type: 模型类型（如 'customvoice', 'base', 'voicedesign'）
+        on_change: 选择变更回调函数
+        width: 控件宽度，默认200
+
+    Returns:
+        ft.Dropdown: 配置好的下拉框
+    """
+    usable_models = model_manager.list_usable_models_by_type(model_type)
+    model_options = []
+    for model_id in usable_models:
+        model_info = model_manager.get_model_info(model_id)
+        if model_info:
+            model_options.append(ft.dropdown.Option(model_id, model_info.name))
+
+    default_model = usable_models[0] if usable_models else None
+    return ft.Dropdown(
+        label="选择模型",
+        options=model_options,
+        value=default_model,
+        width=width,
+        text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+        disabled=len(usable_models) == 0,
+        on_select=on_change
+    )
+
+
+def create_batch_controls(
+    on_toggle=None,
+    default_batch_size: str = "16"
+) -> dict:
+    """
+    创建批量推理控件组
+
+    此函数创建批量推理所需的所有控件，包括开关、批次大小输入框和分割模式下拉框。
+
+    Args:
+        on_toggle: 批量推理开关切换回调
+        default_batch_size: 默认批次大小，默认"16"
+
+    Returns:
+        dict: 包含所有批量控件的字典
+        - switch: 批量推理开关
+        - size_input: 批次大小输入框
+        - mode_dropdown: 分割模式下拉框
+        - progress_text: 进度文本
+        - progress_bar: 进度条
+    """
+    batch_streaming_switch = ft.Switch(
+        label="",
+        value=False,
+        on_change=on_toggle
+    )
+
+    batch_size_input = ft.TextField(
+        label="分批大小",
+        value=default_batch_size,
+        width=100,
+        keyboard_type=ft.KeyboardType.NUMBER,
+        text_style=ft.TextStyle(font_family="Microsoft YaHei", size=12),
+    )
+
+    split_mode_dropdown = ft.Dropdown(
+        label="分割模式",
+        options=[
+            ft.dropdown.Option("multiline", "按行分割"),
+            ft.dropdown.Option("sentence", "按句分割"),
+        ],
+        value="multiline",
+        width=120,
+        text_style=ft.TextStyle(font_family="Microsoft YaHei", size=12),
+    )
+
+    batch_progress_text = ft.Text("", size=12, visible=False)
+    batch_progress_bar = ft.ProgressBar(value=0, visible=False, bar_height=4)
+
+    return {
+        "switch": batch_streaming_switch,
+        "size_input": batch_size_input,
+        "mode_dropdown": split_mode_dropdown,
+        "progress_text": batch_progress_text,
+        "progress_bar": batch_progress_bar,
+    }
+
+
+def create_audio_filename_input() -> ft.TextField:
+    """
+    创建音频文件名输入框
+
+    此函数提供统一的音频文件名输入框样式。
+
+    Returns:
+        ft.TextField: 配置好的输入框
+    """
+    return ft.TextField(
+        label="音频文件名（可选，留空则自动生成）",
+        hint_text="例如: 我的语音",
+        text_style=ft.TextStyle(font_family="Microsoft YaHei"),
+        expand=True
+    )
+
+
+def create_advanced_options_tile(controls: list = None) -> ft.ExpansionTile:
+    """
+    创建高级选项 ExpansionTile
+
+    Args:
+        controls: 内部控件列表，默认包含采样率选项
+
+    Returns:
+        ft.ExpansionTile: 配置好的高级选项面板
+    """
+    if controls is None:
+        controls = [
+            ft.ListTile(
+                title=ft.Text("采样率", size=13),
+                trailing=ft.Dropdown(
+                    options=[
+                        ft.dropdown.Option("24000", "24000 Hz"),
+                    ],
+                    value="24000",
+                    width=120,
+                    text_style=ft.TextStyle(font_family="Microsoft YaHei", size=12),
+                ),
+            )
+        ]
+
+    return ft.ExpansionTile(
+        title=ft.Text("高级选项", size=14, weight=ft.FontWeight.BOLD),
+        subtitle=ft.Text("配置生成参数", size=12),
+        collapsed_bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+        bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
+        controls_padding=ft.Padding.all(10),
+        controls=controls,
+    )
+
