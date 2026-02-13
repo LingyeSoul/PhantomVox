@@ -158,13 +158,14 @@ class VocalDataManager:
                 logger.warning(f"克隆 {clone_id} 的音频文件丢失")
                 return None
 
-            # 尝试加载特征数据（可选）
+            # 尝试加载特征数据（可选，支持 .safetensors 和 .pt 格式）
             prompt_features = None
-            features_file = clone_dir / "prompt_features.pt"
-            if features_file.exists():
+            # 使用无扩展名路径，让 load_prompt_features 自动检测格式
+            features_base = clone_dir / "prompt_features"
+            if features_base.with_suffix('.safetensors').exists() or features_base.with_suffix('.pt').exists():
                 try:
                     from tts.prompt_serializer import load_prompt_features
-                    prompt_features = load_prompt_features(str(features_file))
+                    prompt_features = load_prompt_features(str(features_base))
                 except Exception as e:
                     logger.warning(f"加载特征数据失败: {e}")
 

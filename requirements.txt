@@ -7,6 +7,9 @@ flet==0.80.5
 # qwen-tts>=0.0.5  # Using local build instead (qwen_tts-0.0.6-py3-none-any.whl)
 modelscope>=1.34.0
 
+# Security - safe tensor serialization
+safetensors>=0.4.0
+
 # Torch compilation dependencies (Windows only for torch.compile)
 triton-windows<3.6; sys_platform == 'win32' and platform_machine == 'AMD64'
 
