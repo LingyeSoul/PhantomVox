@@ -9,31 +9,27 @@ import logging
 import tempfile
 import soundfile as sf
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Literal
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# 支持的音频输出格式
+AudioFormat = Literal["wav", "mp3", "ogg"]
+SUPPORTED_FORMATS = {"wav", "mp3", "ogg"}
 
 
 class AudioTempManager:
     """音频临时文件管理器"""
 
-    def __init__(self, project_root: str = None):
-        """
-        初始化临时文件管理器
-
-        Args:
-            project_root: 项目根目录，如果为 None 则自动检测
-        """
+    def __init__(self, project_root: Optional[str] = None):
         if project_root is None:
-            # 自动检测项目根目录
             current_file = Path(__file__).resolve()
-            project_root = current_file.parent.parent.parent
+            project_root = str(current_file.parent.parent.parent)
 
         self.project_root = Path(project_root)
         self.temp_dir = self.project_root / "temp"
 
-        # 确保 temp 目录存在
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"音频临时文件目录: {self.temp_dir}")
@@ -155,9 +151,90 @@ class AudioTempManager:
 
     def file_exists(self, file_path: str) -> bool:
         """检查临时文件是否存在"""
-        return file_path and os.path.exists(file_path)
+        return bool(file_path and os.path.exists(file_path))
 
-    def save_to_persistent(self, temp_file_path: str, save_dir: str, prefix: str = "audio", custom_filename: str = None) -> str:
+    def convert_audio_format(
+        self,
+        source_path: str,
+        target_path: str,
+        target_format: AudioFormat
+    ) -> str:
+        if target_format not in SUPPORTED_FORMATS:
+            raise ValueError(f"不支持的音频格式: {target_format}，支持: {SUPPORTED_FORMATS}")
+
+        if not os.path.exists(source_path):
+            raise ValueError(f"源文件不存在: {source_path}")
+
+        if target_format == "wav":
+            import shutil
+            full_path = f"{target_path}.wav"
+            shutil.copy2(source_path, full_path)
+            return full_path
+
+        try:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_wav(source_path)
+            full_path = f"{target_path}.{target_format}"
+
+            format_kwargs = {"format": target_format}
+            if target_format == "mp3":
+                format_kwargs["bitrate"] = "192k"
+
+            audio.export(full_path, **format_kwargs)
+            logger.info(f"✓ 音频格式转换成功: {Path(full_path).name}")
+            return full_path
+
+        except ImportError:
+            raise RuntimeError("pydub 未安装，无法进行格式转换。请安装: pip install pydub")
+        except Exception as e:
+            raise RuntimeError(f"音频格式转换失败: {str(e)}")
+
+    def save_audio_to_format(
+        self,
+        audio_data: np.ndarray,
+        sample_rate: int,
+        save_dir: str,
+        prefix: str = "audio",
+        output_format: AudioFormat = "wav"
+    ) -> str:
+        """直接保存音频为指定格式（内存中转换）"""
+        from datetime import datetime
+
+        if output_format not in SUPPORTED_FORMATS:
+            logger.warning(f"不支持的格式 {output_format}，使用默认 wav")
+            output_format = "wav"
+
+        save_path = Path(save_dir)
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename_base = f"{prefix}_{timestamp}"
+
+        full_path = save_path / filename_base
+        temp_wav = str(full_path) + ".wav"
+
+        try:
+            sf.write(temp_wav, audio_data, sample_rate)
+
+            if output_format == "wav":
+                return temp_wav
+            else:
+                return self.convert_audio_format(temp_wav, str(full_path), output_format)
+        finally:
+            if output_format != "wav" and os.path.exists(temp_wav):
+                try:
+                    os.remove(temp_wav)
+                except Exception:
+                    pass
+
+    def save_to_persistent(
+        self,
+        temp_file_path: str,
+        save_dir: str,
+        prefix: str = "audio",
+        custom_filename: Optional[str] = None,
+        output_format: AudioFormat = "wav"
+    ) -> str:
         """
         将临时文件保存到持久化目录
 
@@ -166,44 +243,42 @@ class AudioTempManager:
             save_dir: 保存目录
             prefix: 文件名前缀
             custom_filename: 自定义文件名（不含扩展名），如果为 None 则使用时间戳
+            output_format: 输出格式 (wav/mp3/ogg)
 
         Returns:
             str: 保存后的文件完整路径
 
         Raises:
-            ValueError: 如果临时文件不存在
+            ValueError: 如果临时文件不存在或格式不支持
             OSError: 如果保存失败
         """
         if not temp_file_path or not os.path.exists(temp_file_path):
             raise ValueError(f"临时文件不存在: {temp_file_path}")
 
-        import shutil
+        if output_format not in SUPPORTED_FORMATS:
+            logger.warning(f"不支持的格式 {output_format}，使用默认 wav")
+            output_format = "wav"
+
         from datetime import datetime
 
-        # 使用 Path 对象规范化路径，确保斜杠方向一致
         save_path = Path(save_dir)
-
-        # 确保保存目录存在
         save_path.mkdir(parents=True, exist_ok=True)
 
-        # 生成文件名
         if custom_filename:
-            # 使用自定义文件名，确保有 .wav 扩展名
-            if not custom_filename.endswith('.wav'):
-                custom_filename += '.wav'
-            filename = custom_filename
+            filename_base = custom_filename
+            if filename_base.endswith(('.wav', '.mp3', '.ogg')):
+                filename_base = Path(filename_base).stem
         else:
-            # 使用默认的时间戳文件名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{prefix}_{timestamp}.wav"
+            filename_base = f"{prefix}_{timestamp}"
 
-        # 使用 Path 构建完整路径，自动处理斜杠
-        full_path = save_path / filename
+        full_path = save_path / filename_base
 
-        # 复制临时文件到目标位置
-        shutil.copy2(temp_file_path, str(full_path))
-
-        # 返回规范化的路径字符串
-        normalized_path = str(full_path)
-        logger.info(f"✓ 音频已保存到: {normalized_path}")
-        return normalized_path
+        if output_format == "wav":
+            import shutil
+            target_file = f"{full_path}.wav"
+            shutil.copy2(temp_file_path, target_file)
+            logger.info(f"✓ 音频已保存到: {target_file}")
+            return target_file
+        else:
+            return self.convert_audio_format(temp_file_path, str(full_path), output_format)

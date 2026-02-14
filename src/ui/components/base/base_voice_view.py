@@ -418,9 +418,13 @@ class BaseVoiceView(ft.Container):
         if self._temp_audio_file:
             self._audio_temp_manager.cleanup_file(self._temp_audio_file)
 
-        self._temp_audio_file = self._audio_temp_manager.save_audio(audio, sample_rate, prefix=prefix)
+        self._temp_audio_file = self._audio_temp_manager.save_audio(audio, sample_rate, prefix=prefix or "audio")
         self._last_audio = (audio, sample_rate)
         self.audio_control.update_audio_state(True)
+
+        auto_save = self.config_manager.get("audio.auto_save", False)
+        if auto_save:
+            self._auto_save_audio()
 
     # ==================== 音频控制 ====================
 
@@ -484,13 +488,15 @@ class BaseVoiceView(ft.Container):
 
         try:
             save_dir = self.config_manager.get("audio.save_directory", "./output")
+            output_format = self.config_manager.get("audio.output_format", "wav")
             custom_filename = self.audio_filename_input.value.strip() if self.audio_filename_input.value else None
 
             save_path = self._audio_temp_manager.save_to_persistent(
                 self._temp_audio_file,
                 save_dir,
                 prefix=self._get_save_prefix(),
-                custom_filename=custom_filename
+                custom_filename=custom_filename,
+                output_format=output_format
             )
 
             self.terminal.add_log(f"音频已保存: {save_path}")
@@ -506,6 +512,28 @@ class BaseVoiceView(ft.Container):
                 ft.Text(f"保存失败: {str(e)}"),
                 bgcolor=ft.Colors.RED
             ))
+
+    def _auto_save_audio(self):
+        if not self._last_audio:
+            return
+
+        try:
+            audio_data, sample_rate = self._last_audio
+            save_dir = self.config_manager.get("audio.save_directory", "./output")
+            output_format = self.config_manager.get("audio.output_format", "wav")
+
+            save_path = self._audio_temp_manager.save_audio_to_format(
+                audio_data,
+                sample_rate,
+                save_dir,
+                prefix=self._get_save_prefix(),
+                output_format=output_format
+            )
+
+            self.terminal.add_log(f"音频已自动保存: {save_path}")
+        except Exception as e:
+            logger.error(f"自动保存音频失败: {str(e)}")
+            self.terminal.add_log(f"自动保存失败: {str(e)}")
 
     def _cleanup_gpu_memory(self):
         """清理GPU显存"""
