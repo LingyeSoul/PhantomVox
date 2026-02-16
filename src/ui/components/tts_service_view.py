@@ -1,56 +1,51 @@
-"""
-TTS 服务管理界面
-
-提供 TTS HTTP 服务的启动/停止、配置管理、状态监控功能
-请求日志会输出到运行日志控件中
-"""
-
 import flet as ft
 import logging
-from typing import Optional
+import asyncio
+from typing import Optional, Callable
 from core.tts_server import FastAPITSServer as TTSServer
 from core.network import NetworkManager
+from api.dependencies import update_service_config
 
 logger = logging.getLogger(__name__)
 
+TTS_MODE_CUSTOM_VOICE = "customvoice"
+TTS_MODE_VOICE_DESIGN = "voicedesign"
+TTS_MODE_VOICE_CLONE = "base"
+
+MODE_LABELS = {
+    TTS_MODE_CUSTOM_VOICE: "自定义语音",
+    TTS_MODE_VOICE_DESIGN: "声音设计",
+    TTS_MODE_VOICE_CLONE: "声音克隆",
+}
+
 
 class TTSServiceView(ft.Container):
-    """TTS 服务管理视图"""
-
     def __init__(
         self,
         page: ft.Page,
-        tts_engine_getter,
+        tts_engine_getter: Callable,
         terminal,
         config_manager,
-        on_service_state_change: Optional[callable] = None
+        model_manager,
+        voice_library,
+        on_service_state_change: Optional[Callable] = None,
+        on_load_model: Optional[Callable] = None,
     ):
-        """初始化 TTS 服务管理视图
-
-        Args:
-            page: Flet Page 对象
-            tts_engine_getter: TTS 引擎获取函数
-            terminal: 终端对象（用于日志输出）
-            config_manager: 配置管理器
-            on_service_state_change: 服务状态变化回调
-        """
         self._page = page
         self.tts_engine_getter = tts_engine_getter
         self.terminal = terminal
         self.config_manager = config_manager
+        self.model_manager = model_manager
+        self.voice_library = voice_library
         self.on_service_state_change = on_service_state_change
+        self.on_load_model = on_load_model
 
-        # 网络管理器
         self.network_manager = NetworkManager(log_callback=self._log_callback)
-
-        # TTS 服务器实例
         self.server: Optional[TTSServer] = None
 
-        # 从配置加载端口
         self.port = self.config_manager.get("tts_service.port", 13650)
-        self.auto_start = self.config_manager.get("tts_service.auto_start", False)
+        self.current_mode = TTS_MODE_CUSTOM_VOICE
 
-        # UI 控件引用
         self.port_input: Optional[ft.TextField] = None
         self.start_button: Optional[ft.Button] = None
         self.stop_button: Optional[ft.Button] = None
@@ -58,33 +53,27 @@ class TTSServiceView(ft.Container):
         self.url_text: Optional[ft.Text] = None
         self.stats_text: Optional[ft.Text] = None
 
-        # 先创建这些控件
+        self.speaker_dropdown: Optional[ft.Dropdown] = None
+        self.preset_dropdown: Optional[ft.Dropdown] = None
+        self.clone_dropdown: Optional[ft.Dropdown] = None
+        self.model_dropdown: Optional[ft.Dropdown] = None
+        self.selected_model_id: Optional[str] = None
+
         self.url_text = ft.Text(
-            "未运行",
-            size=16,
-            color=ft.Colors.GREY,
-            weight=ft.FontWeight.BOLD
+            "未运行", size=16, color=ft.Colors.GREY, weight=ft.FontWeight.BOLD
         )
-        self.stats_text = ft.Text(
-            "总请求: 0 | 成功: 0 | 失败: 0",
-            size=14
-        )
+        self.stats_text = ft.Text("总请求: 0 | 成功: 0 | 失败: 0", size=14)
 
-        # 构建UI并设置容器内容
-        super().__init__(
-            content=self.build(),
-            expand=True
-        )
+        super().__init__(content=self.build(), expand=True)
 
-    def _log_callback(self, message: str, level: str = 'info'):
-        """日志回调"""
+    def _log_callback(self, message: str, level: str = "info"):
         if self.terminal:
             try:
-                if level == 'success':
+                if level == "success":
                     self.terminal.add_log(f"✓ {message}")
-                elif level == 'error':
+                elif level == "error":
                     self.terminal.add_log(f"✗ {message}")
-                elif level == 'warning':
+                elif level == "warning":
                     self.terminal.add_log(f"⚠ {message}")
                 else:
                     self.terminal.add_log(message)
@@ -92,7 +81,6 @@ class TTSServiceView(ft.Container):
                 logger.error(f"Log callback error: {e}")
 
     def _update_service_status(self, running: bool):
-        """更新服务状态 UI"""
         if running:
             self.status_card.bgcolor = ft.Colors.with_opacity(0.1, ft.Colors.GREEN)
             self.url_text.value = f"http://{self._get_server_url()}"
@@ -106,10 +94,8 @@ class TTSServiceView(ft.Container):
             self.start_button.disabled = False
             self.stop_button.disabled = True
 
-        # 使用父容器的 update 来批量更新所有子控件
         self.update()
 
-        # 调用状态变化回调
         if self.on_service_state_change:
             try:
                 self.on_service_state_change(running)
@@ -117,176 +103,312 @@ class TTSServiceView(ft.Container):
                 logger.error(f"Service state change callback error: {e}")
 
     def _get_server_url(self) -> str:
-        """获取服务器 URL"""
         local_ip = self.network_manager.get_local_ip()
         if local_ip:
             return f"{local_ip}:{self.port}"
         return f"localhost:{self.port}"
 
+    def _on_tab_change(self, e):
+        mode_map = [TTS_MODE_CUSTOM_VOICE, TTS_MODE_VOICE_DESIGN, TTS_MODE_VOICE_CLONE]
+        idx = e.data if isinstance(e.data, int) else int(e.data) if e.data else 0
+        if 0 <= idx < len(mode_map):
+            self.current_mode = mode_map[idx]
+            self._log_callback(
+                f"切换到 {MODE_LABELS.get(self.current_mode, self.current_mode)} 模式"
+            )
+
+    def _build_model_selector(self, model_type: str):
+        models = []
+        if self.model_manager:
+            models = self.model_manager.list_usable_models_by_type(model_type)
+
+        self.model_dropdown = ft.Dropdown(
+            label="模型",
+            options=[ft.dropdown.Option(m) for m in models]
+            if models
+            else [ft.dropdown.Option("无可用模型")],
+            value=models[0] if models else None,
+            width=200,
+        )
+        if models:
+            self.selected_model_id = models[0]
+
+        return ft.Row(
+            [
+                ft.Icon(ft.Icons.STORAGE, size=20, color=ft.Colors.TEAL),
+                self.model_dropdown,
+            ],
+            spacing=10,
+        )
+
+    def _on_model_change(self, e):
+        self.selected_model_id = e.control.value
+        self._log_callback(f"已选择模型: {self.selected_model_id}")
+
+    def _build_custom_voice_config(self):
+        speakers = ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna"]
+        if self.voice_library:
+            speakers = self.voice_library.get_custom_voice_speakers()
+        self.speaker_dropdown = ft.Dropdown(
+            label="说话人",
+            options=[ft.dropdown.Option(s) for s in speakers],
+            value=speakers[0] if speakers else "Vivian",
+            width=200,
+        )
+        return ft.Column(
+            [
+                self._build_model_selector(TTS_MODE_CUSTOM_VOICE),
+                ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.PERSON, size=20, color=ft.Colors.BLUE),
+                        self.speaker_dropdown,
+                    ],
+                    spacing=10,
+                ),
+            ],
+            spacing=5,
+        )
+
+    def _build_voice_design_config(self):
+        presets = []
+        if self.voice_library:
+            presets = list(self.voice_library.get_all_design_presets().keys())
+        self.preset_dropdown = ft.Dropdown(
+            label="预设",
+            options=[ft.dropdown.Option(p) for p in presets]
+            if presets
+            else [ft.dropdown.Option("无预设")],
+            value=presets[0] if presets else None,
+            width=200,
+        )
+        return ft.Column(
+            [
+                self._build_model_selector(TTS_MODE_VOICE_DESIGN),
+                ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.PALETTE, size=20, color=ft.Colors.PURPLE),
+                        self.preset_dropdown,
+                    ],
+                    spacing=10,
+                ),
+            ],
+            spacing=5,
+        )
+
+    def _build_voice_clone_config(self):
+        clones = []
+        if self.voice_library:
+            clones = [c["name"] for c in self.voice_library.get_all_clones()]
+        self.clone_dropdown = ft.Dropdown(
+            label="克隆音色",
+            options=[ft.dropdown.Option(c) for c in clones]
+            if clones
+            else [ft.dropdown.Option("无克隆音色")],
+            value=clones[0] if clones else None,
+            width=200,
+        )
+        return ft.Column(
+            [
+                self._build_model_selector(TTS_MODE_VOICE_CLONE),
+                ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.CONTENT_COPY, size=20, color=ft.Colors.ORANGE),
+                        self.clone_dropdown,
+                    ],
+                    spacing=10,
+                ),
+            ],
+            spacing=5,
+        )
+
     def _start_service(self, e):
-        """启动 TTS 服务（异步）"""
+        self._do_start_service()
+
+    def _do_start_service(self):
         try:
-            # 获取端口
             try:
                 port = int(self.port_input.value)
                 if port < 1 or port > 65535:
                     raise ValueError("端口必须在 1-65535 之间")
             except ValueError as err:
-                self._page.show_dialog(ft.SnackBar(
-                    ft.Text(f"端口无效: {err}"),
-                    duration=3000
-                ))
+                self._page.show_dialog(
+                    ft.SnackBar(ft.Text(f"端口无效: {err}"), duration=3000)
+                )
                 return
 
-            # 立即保存端口到配置（点击启动按钮时保存）
             self.port = port
             self.config_manager.set("tts_service.port", self.port)
             self.config_manager.save_config()
 
-            # 停止现有服务
-            if self.server and self.server.is_running():
-                self.server.stop()
-                import time
-                time.sleep(0.5)  # 等待服务完全停止
+            self.start_button.disabled = True
+            self.start_button.text = "加载中..."
+            self.update()
 
-            # 创建并启动服务器（使用新的端口）
+            self._load_model_and_start(port)
+
+        except Exception as ex:
+            self._log_callback(f"启动服务失败: {str(ex)}", "error")
+            self._reset_start_button()
+
+    def _load_model_and_start(self, port: int):
+        async def load_and_start():
+            try:
+                engine = self.tts_engine_getter()
+                if engine is None:
+                    self._log_callback(
+                        f"正在加载 {MODE_LABELS.get(self.current_mode, self.current_mode)} 模型..."
+                    )
+                    if self.on_load_model:
+                        success = await self.on_load_model(self.current_mode)
+                        if not success:
+                            self._log_callback("模型加载失败", "error")
+                            self._reset_start_button()
+                            return
+                    else:
+                        self._log_callback("无法加载模型：未提供加载回调", "error")
+                        self._reset_start_button()
+                        return
+                    engine = self.tts_engine_getter()
+
+                if engine is None:
+                    self._log_callback("模型加载后引擎仍不可用", "error")
+                    self._reset_start_button()
+                    return
+
+                self._log_callback("模型已就绪，启动服务...", "info")
+                self._save_service_config()
+                await self._start_server(port)
+
+            except Exception as ex:
+                self._log_callback(f"启动过程出错: {str(ex)}", "error")
+                self._reset_start_button()
+
+        asyncio.create_task(load_and_start())
+
+    def _save_service_config(self):
+        speaker = self.speaker_dropdown.value if self.speaker_dropdown else "Vivian"
+        preset = self.preset_dropdown.value if self.preset_dropdown else None
+        clone_prompt = None
+
+        if self.current_mode == TTS_MODE_VOICE_CLONE and self.voice_library:
+            clone_name = self.clone_dropdown.value if self.clone_dropdown else None
+            if clone_name:
+                for clone in self.voice_library.get_all_clones():
+                    if clone.get("name") == clone_name:
+                        clone_id = clone.get("id")
+                        if clone_id:
+                            clone_data = self.voice_library.get_clone(clone_id)
+                            if clone_data:
+                                clone_prompt = clone_data.get("prompt_features")
+                        break
+
+        update_service_config(
+            mode=self.current_mode,
+            model_id=self.selected_model_id,
+            speaker=speaker,
+            preset=preset,
+            clone_prompt=clone_prompt,
+        )
+        self._log_callback(
+            f"配置已保存: 模式={MODE_LABELS.get(self.current_mode)}, 说话人/预设={speaker or preset}"
+        )
+
+    async def _start_server(self, port: int):
+        try:
+            if self.server and self.server.is_running():
+                self._do_stop_server_sync()
+                await asyncio.sleep(0.5)
+
             self.server = TTSServer(
                 host="0.0.0.0",
-                port=self.port,
+                port=port,
                 tts_engine_getter=self.tts_engine_getter,
-                log_callback=self._log_callback
+                log_callback=self._log_callback,
             )
 
-            # 立即更新 UI（不阻塞）
-            self._update_service_status(True)
-            self._log_callback(f"正在启动 TTS 服务，端口 {self.port}...", 'info')
-
-            # 启动服务器（异步）
             self.server.start()
-
-            # 延迟检查服务器状态
-            import threading
-            import socket
-            def check_server_started():
-                import time
-                time.sleep(2)  # 等待服务器完全启动
-
-                # 1. 检查服务器线程状态
-                thread_alive = (self.server and
-                              self.server.server_thread and
-                              self.server.server_thread.is_alive())
-
-                # 2. 尝试实际连接到服务器
-                can_connect = False
-                if thread_alive:
-                    try:
-                        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        test_sock.settimeout(1)
-                        test_sock.connect(('127.0.0.1', self.port))
-                        test_sock.close()
-                        can_connect = True
-                    except Exception:
-                        pass
-
-                # 3. 综合判断
-                if thread_alive and can_connect:
-                    self._log_callback(f"TTS 服务已成功启动在端口 {self.port}", 'success')
-                elif thread_alive and not can_connect:
-                    self._update_service_status(False)
-                    self._log_callback("TTS 服务线程运行中，但端口无法连接", 'error')
-                else:
-                    self._update_service_status(False)
-                    self._log_callback("TTS 服务启动失败（线程已结束）", 'error')
-
-            threading.Thread(target=check_server_started, daemon=True).start()
-
-            # 启动状态更新定时器
-            self._start_status_update_timer()
+            self._update_service_status(True)
+            self._log_callback(f"TTS 服务已启动在端口 {port}", "success")
 
         except Exception as ex:
-            self._log_callback(f"启动服务失败: {str(ex)}", 'error')
-            self._update_service_status(False)
+            self._log_callback(f"启动服务器失败: {str(ex)}", "error")
+            self._reset_start_button()
+
+    def _reset_start_button(self):
+        self.start_button.disabled = False
+        self.start_button.text = "启动服务"
+        self.stop_button.disabled = True
+        self.update()
 
     def _stop_service(self, e):
-        """停止 TTS 服务（异步）"""
+        self._do_stop_service()
+
+    def _do_stop_service(self):
         try:
             if self.server:
-                self._log_callback("正在停止 TTS 服务...", 'info')
+                self._log_callback("正在停止 TTS 服务...", "info")
+                self._do_stop_server_sync()
+                self._log_callback("TTS 服务已停止", "success")
 
-                # 在后台线程中停止服务器
-                import threading
-                def stop_server():
-                    try:
-                        self.server.stop()
-                        self._log_callback("TTS 服务已停止", 'success')
-                    except Exception as ex:
-                        self._log_callback(f"停止服务失败: {str(ex)}", 'error')
-
-                threading.Thread(target=stop_server, daemon=True).start()
-
-            # 立即更新 UI
             self._update_service_status(False)
 
         except Exception as ex:
-            self._log_callback(f"停止服务失败: {str(ex)}", 'error')
+            self._log_callback(f"停止服务失败: {str(ex)}", "error")
+
+    def _do_stop_server_sync(self):
+        if self.server:
+            try:
+                if (
+                    hasattr(self.server, "_uvicorn_server")
+                    and self.server._uvicorn_server
+                ):
+                    self.server._uvicorn_server.should_exit = True
+
+                self.server._running = False
+
+                if self.server._server_thread and self.server._server_thread.is_alive():
+                    self.server._server_thread.join(timeout=3)
+
+                self.server = None
+
+            except Exception as ex:
+                logger.error(f"停止服务器时出错: {ex}")
+                self.server = None
 
     def _refresh_stats(self):
-        """刷新统计信息"""
         if self.server and self.server.is_running():
             stats = self.server.get_stats()
-
-            # 更新统计文本
             self.stats_text.value = (
                 f"总请求: {stats['total_requests']} | "
                 f"成功: {stats['successful_requests']} | "
                 f"失败: {stats['failed_requests']}"
             )
-            self.update()  # 批量更新所有子控件
+            self.update()
 
-            # 输出新的请求日志到 terminal
-            if stats['recent_requests']:
-                for req in reversed(stats['recent_requests']):
-                    status_icon = "✓" if req['success'] else "✗"
+            if stats["recent_requests"]:
+                for req in reversed(stats["recent_requests"]):
                     self._log_callback(
                         f"[{req['time']}] {req['status']}",
-                        'success' if req['success'] else 'error'
+                        "success" if req["success"] else "error",
                     )
 
-    def _start_status_update_timer(self):
-        """启动状态更新定时器"""
-        def update_timer():
-            import asyncio
-            while self.server and self.server.is_running():
-                try:
-                    self._refresh_stats()
-                except Exception:
-                    pass
-                asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda: __import__('time').sleep(2)
-                )
-
     def build(self):
-        """构建服务管理界面"""
-
-        # 端口输入
         self.port_input = ft.TextField(
             label="服务端口",
             value=str(self.port),
             width=150,
             text_align=ft.TextAlign.CENTER,
-            input_filter=ft.NumbersOnlyInputFilter()
+            input_filter=ft.NumbersOnlyInputFilter(),
         )
 
-        # 启动/停止按钮
         self.start_button = ft.Button(
             "启动服务",
             icon=ft.Icons.PLAY_ARROW,
             on_click=self._start_service,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.GREEN,
-                color=ft.Colors.WHITE
-            )
+            style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE),
         )
 
         self.stop_button = ft.Button(
@@ -294,93 +416,180 @@ class TTSServiceView(ft.Container):
             icon=ft.Icons.STOP,
             on_click=self._stop_service,
             disabled=True,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.RED,
-                color=ft.Colors.WHITE
-            )
+            style=ft.ButtonStyle(bgcolor=ft.Colors.RED, color=ft.Colors.WHITE),
         )
 
-        # 状态卡片
+        self.mode_tabs = ft.Tabs(
+            selected_index=0,
+            length=3,
+            animation_duration=300,
+            content=ft.Column(
+                [
+                    ft.TabBar(
+                        tab_alignment=ft.TabAlignment.START,
+                        indicator_color=ft.Colors.BLUE,
+                        tabs=[
+                            ft.Tab(icon=ft.Icons.MIC, label="自定义语音"),
+                            ft.Tab(icon=ft.Icons.PALETTE, label="声音设计"),
+                            ft.Tab(icon=ft.Icons.CONTENT_COPY, label="声音克隆"),
+                        ],
+                    ),
+                    ft.Container(
+                        content=ft.TabBarView(
+                            [
+                                ft.Container(
+                                    content=self._build_custom_voice_config(),
+                                    padding=15,
+                                ),
+                                ft.Container(
+                                    content=self._build_voice_design_config(),
+                                    padding=15,
+                                ),
+                                ft.Container(
+                                    content=self._build_voice_clone_config(), padding=15
+                                ),
+                            ],
+                        ),
+                        bgcolor=ft.Colors.with_opacity(0.03, ft.Colors.ON_SURFACE),
+                        border_radius=8,
+                        height=150,
+                    ),
+                ]
+            ),
+            on_change=self._on_tab_change,
+        )
+
         self.status_card = ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Icon(ft.Icons.ROUTER, size=30, color=ft.Colors.BLUE),
-                    ft.Text("服务状态", size=18, weight=ft.FontWeight.BOLD),
-                ], spacing=10),
-                ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
-                ft.Row([
-                    ft.Text("访问地址:", size=14, weight=ft.FontWeight.BOLD),
-                    ft.Container(expand=True),
-                ]),
-                self.url_text,
-                ft.Divider(height=15, color=ft.Colors.TRANSPARENT),
-                ft.Row([
-                    ft.Text("统计信息:", size=14, weight=ft.FontWeight.BOLD),
-                    ft.Container(expand=True),
-                ]),
-                self.stats_text,
-            ], spacing=5),
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.ROUTER, size=30, color=ft.Colors.BLUE),
+                            ft.Text("服务状态", size=18, weight=ft.FontWeight.BOLD),
+                        ],
+                        spacing=10,
+                    ),
+                    ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+                    ft.Row(
+                        [
+                            ft.Text("访问地址:", size=14, weight=ft.FontWeight.BOLD),
+                            ft.Container(expand=True),
+                        ]
+                    ),
+                    self.url_text,
+                    ft.Divider(height=15, color=ft.Colors.TRANSPARENT),
+                    ft.Row(
+                        [
+                            ft.Text("统计信息:", size=14, weight=ft.FontWeight.BOLD),
+                            ft.Container(expand=True),
+                        ]
+                    ),
+                    self.stats_text,
+                ],
+                spacing=5,
+            ),
             padding=20,
             border_radius=12,
             bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.GREY),
         )
 
-        # 控制卡片
         control_card = ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Icon(ft.Icons.SETTINGS, size=30, color=ft.Colors.BLUE),
-                    ft.Text("服务控制", size=18, weight=ft.FontWeight.BOLD),
-                ], spacing=10),
-                ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
-                ft.Row([
-                    ft.Text("端口:", size=14),
-                    self.port_input,
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
-                ft.Row([
-                    self.start_button,
-                    self.stop_button,
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
-            ], spacing=5),
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.SETTINGS, size=30, color=ft.Colors.BLUE),
+                            ft.Text("服务控制", size=18, weight=ft.FontWeight.BOLD),
+                        ],
+                        spacing=10,
+                    ),
+                    ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+                    ft.Row(
+                        [
+                            ft.Text("端口:", size=14),
+                            self.port_input,
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=10,
+                    ),
+                    ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
+                    ft.Row(
+                        [
+                            self.start_button,
+                            self.stop_button,
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=10,
+                    ),
+                ],
+                spacing=5,
+            ),
             padding=20,
             border_radius=12,
             bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.ON_SURFACE),
         )
 
-        # 主布局
-        return ft.Column([
-            # 标题行
-            ft.Row([
-                ft.Icon(ft.Icons.CLOUD, size=40, color=ft.Colors.BLUE),
-                ft.Text("TTS 服务管理", size=24, weight=ft.FontWeight.BOLD),
-            ], spacing=15),
-            ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+        mode_card = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.TUNE, size=30, color=ft.Colors.PURPLE),
+                            ft.Text("服务模式", size=18, weight=ft.FontWeight.BOLD),
+                        ],
+                        spacing=10,
+                    ),
+                    ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+                    self.mode_tabs,
+                ],
+                spacing=5,
+            ),
+            padding=20,
+            border_radius=12,
+            bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.ON_SURFACE),
+        )
 
-            # 左右两列布局
-            ft.Row([
-                # 左列：服务状态
-                ft.Column([
-                    self.status_card,
-                ], expand=1, spacing=0),
+        result = ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.CLOUD, size=40, color=ft.Colors.BLUE),
+                        ft.Text("TTS 服务管理", size=24, weight=ft.FontWeight.BOLD),
+                    ],
+                    spacing=15,
+                ),
+                ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+                ft.Row(
+                    [
+                        ft.Column(
+                            [
+                                self.status_card,
+                            ],
+                            expand=1,
+                            spacing=0,
+                        ),
+                        ft.VerticalDivider(width=20, color=ft.Colors.TRANSPARENT),
+                        ft.Column(
+                            [
+                                control_card,
+                            ],
+                            expand=1,
+                            spacing=0,
+                        ),
+                    ],
+                    expand=False,
+                    alignment=ft.MainAxisAlignment.START,
+                ),
+                ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+                mode_card,
+            ],
+            expand=True,
+            spacing=0,
+            scroll=ft.ScrollMode.AUTO,
+        )
 
-                ft.VerticalDivider(width=20, color=ft.Colors.TRANSPARENT),
-
-                # 右列：服务控制
-                ft.Column([
-                    control_card,
-                ], expand=1, spacing=0),
-            ], expand=True, alignment=ft.MainAxisAlignment.START),
-
-        ], expand=True, spacing=0)
+        return result
 
     def cleanup(self):
-        """清理资源（需要在视图销毁时手动调用）"""
         if self.server and self.server.is_running():
-            # 在后台线程中停止服务器，避免阻塞
-            import threading
-            def stop_and_cleanup():
-                try:
-                    self.server.stop()
-                except Exception:
-                    pass
-            threading.Thread(target=stop_and_cleanup, daemon=True).start()
+            self._do_stop_server_sync()

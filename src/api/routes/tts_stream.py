@@ -12,7 +12,15 @@ import numpy as np
 from typing import Optional, AsyncGenerator, Tuple
 
 from api.models import TTSRequest, OpenAITTSRequest
-from api.dependencies import get_tts_engine, get_voice_library, log_message
+from api.dependencies import (
+    get_tts_engine,
+    get_voice_library,
+    log_message,
+    get_service_mode,
+    get_service_speaker,
+    get_service_preset,
+    get_service_clone_prompt,
+)
 from api.routes.status import get_stats
 
 router = APIRouter()
@@ -34,6 +42,7 @@ VOICE_MAPPING = {
 # 辅助函数
 # ============================================
 
+
 def create_wav_header(sample_rate: int, num_samples: int) -> bytes:
     """创建 WAV 文件头
 
@@ -54,21 +63,23 @@ def create_wav_header(sample_rate: int, num_samples: int) -> bytes:
     data_size = num_samples * 2
 
     # RIFF header
-    header = struct.pack('<4sI4s', b'RIFF', 36 + data_size, b'WAVE')
+    header = struct.pack("<4sI4s", b"RIFF", 36 + data_size, b"WAVE")
 
     # fmt chunk (chunk ID + size + format data)
-    header += struct.pack('<4sIHHIIHH',
-                         b'fmt ',      # chunk ID
-                         16,          # chunk size (for PCM)
-                         1,           # audio format (1 = PCM)
-                         1,           # num channels
-                         sample_rate, # sample rate
-                         byte_rate,   # byte rate
-                         2,           # block align
-                         16)          # bits per sample
+    header += struct.pack(
+        "<4sIHHIIHH",
+        b"fmt ",  # chunk ID
+        16,  # chunk size (for PCM)
+        1,  # audio format (1 = PCM)
+        1,  # num channels
+        sample_rate,  # sample rate
+        byte_rate,  # byte rate
+        2,  # block align
+        16,
+    )  # bits per sample
 
     # data chunk
-    header += struct.pack('<4sI', b'data', data_size)
+    header += struct.pack("<4sI", b"data", data_size)
 
     return header
 
@@ -76,7 +87,7 @@ def create_wav_header(sample_rate: int, num_samples: int) -> bytes:
 async def stream_result_to_wav(
     result_generator: AsyncGenerator[Tuple[np.ndarray, int], None],
     initial_header: bool = True,
-    response_format: str = "wav"
+    response_format: str = "wav",
 ) -> AsyncGenerator[bytes, None]:
     """
     将流式生成结果转换为音频块
@@ -119,7 +130,7 @@ async def synthesize_speech_streaming(
     request: TTSRequest,
     engine=Depends(get_tts_engine),
     voice_library=Depends(get_voice_library),
-    stats=Depends(get_stats)
+    stats=Depends(get_stats),
 ):
     """
     真正的流式文本转语音合成（边生成边解码边输出）
@@ -170,7 +181,7 @@ async def synthesize_speech_streaming(
         # 记录请求
         log_message(
             f"[REAL-STREAMING] TTS Request: mode={request.mode}, text='{request.text[:50]}...'",
-            'info'
+            "info",
         )
 
         # 检查引擎是否支持流式输出
@@ -178,7 +189,7 @@ async def synthesize_speech_streaming(
             stats.record_request(success=False)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Streaming is not enabled. Please restart the server with enable_streaming=True"
+                detail="Streaming is not enabled. Please restart the server with enable_streaming=True",
             )
 
         async def audio_stream_generator():
@@ -190,14 +201,14 @@ async def synthesize_speech_streaming(
                         text=request.text,
                         speaker=request.speaker,
                         language=request.language,
-                        instruct=request.instruct
+                        instruct=request.instruct,
                     )
 
                 elif request.mode == "voice_design":
                     result_gen = engine.voice_design_synthesize_streaming_async(
                         text=request.text,
                         design_prompt=request.design_prompt,
-                        language=request.language
+                        language=request.language,
                     )
 
                 elif request.mode == "voice_clone":
@@ -206,7 +217,7 @@ async def synthesize_speech_streaming(
                         stats.record_request(success=False)
                         raise HTTPException(
                             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Voice library not available"
+                            detail="Voice library not available",
                         )
 
                     clone = None
@@ -219,9 +230,17 @@ async def synthesize_speech_streaming(
                                 break
 
                         # 如果按名称找到多个或未找到，且提供了 clone_id，则使用 clone_id
-                        if (clone is None or
-                            len([c for c in voice_library.get_all_clones()
-                                 if c["name"] == request.clone_name]) > 1):
+                        if (
+                            clone is None
+                            or len(
+                                [
+                                    c
+                                    for c in voice_library.get_all_clones()
+                                    if c["name"] == request.clone_name
+                                ]
+                            )
+                            > 1
+                        ):
                             if request.clone_id:
                                 clone = voice_library.get_clone(request.clone_id)
 
@@ -232,7 +251,7 @@ async def synthesize_speech_streaming(
                         stats.record_request(success=False)
                         raise HTTPException(
                             status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"克隆音色未找到：clone_id={request.clone_id}, clone_name={request.clone_name}"
+                            detail=f"克隆音色未找到：clone_id={request.clone_id}, clone_name={request.clone_name}",
                         )
 
                     # 使用克隆音色进行流式合成
@@ -241,21 +260,21 @@ async def synthesize_speech_streaming(
                         # 使用预计算特征（快速）
                         result_gen = engine.voice_clone_synthesize_streaming_async(
                             text=request.text,
-                            voice_clone_prompt=clone["prompt_features"]
+                            voice_clone_prompt=clone["prompt_features"],
                         )
                     else:
                         # 降级：重新计算特征
                         result_gen = engine.voice_clone_synthesize_streaming_async(
                             text=request.text,
                             ref_audio=clone["ref_audio"],
-                            ref_text=clone["ref_text"]
+                            ref_text=clone["ref_text"],
                         )
 
                 else:
                     stats.record_request(success=False)
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Invalid mode: {request.mode}"
+                        detail=f"Invalid mode: {request.mode}",
                     )
 
                 # 转换为 WAV 流并 yield
@@ -265,11 +284,11 @@ async def synthesize_speech_streaming(
             except HTTPException:
                 raise
             except Exception as e:
-                log_message(f"Streaming TTS Error: {str(e)}", 'error')
+                log_message(f"Streaming TTS Error: {str(e)}", "error")
                 logger.exception("Unexpected error in streaming TTS synthesis")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Internal server error: {str(e)}"
+                    detail=f"Internal server error: {str(e)}",
                 )
 
         # 记录成功
@@ -288,8 +307,8 @@ async def synthesize_speech_streaming(
                 "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
                 "Transfer-Encoding": "chunked",  # 明确标识分块传输
                 "Connection": "keep-alive",  # 保持连接
-                "X-Content-Type-Options": "nosniff"
-            }
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     except HTTPException:
@@ -297,11 +316,11 @@ async def synthesize_speech_streaming(
         raise
     except Exception as e:
         stats.record_request(success=False)
-        log_message(f"Streaming TTS Error: {str(e)}", 'error')
+        log_message(f"Streaming TTS Error: {str(e)}", "error")
         logger.exception("Unexpected error in streaming TTS endpoint")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
+            detail=f"Internal server error: {str(e)}",
         )
 
 
@@ -309,7 +328,7 @@ async def synthesize_speech_streaming(
 async def openai_tts_streaming(
     request: OpenAITTSRequest,
     authorization: Optional[str] = None,
-    engine=Depends(get_tts_engine)
+    engine=Depends(get_tts_engine),
 ):
     """
     OpenAI 兼容的真正流式 TTS 端点
@@ -360,70 +379,155 @@ async def openai_tts_streaming(
     ```
     """
     try:
-        # 映射 OpenAI voice 到内部说话人
-        speaker = VOICE_MAPPING.get(request.voice, "Vivian")
+        service_mode = get_service_mode()
+        voice_library = get_voice_library()
 
-        # 记录请求
+        voice_param = request.voice if hasattr(request, "voice") else None
+
         log_message(
-            f"[REAL-STREAMING] OpenAI TTS Request: model={request.model}, voice={request.voice} -> {speaker}, "
-            f"format={request.response_format}, text='{request.input[:50]}...'",
-            'info'
+            f"[STREAMING] Request: mode={service_mode}, voice={voice_param}, format={request.response_format}",
+            "info",
         )
 
-        # 检查引擎是否支持流式输出
         if not engine.enable_streaming:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Streaming is not enabled. Please restart the server with enable_streaming=True"
+                detail="Streaming is not enabled",
             )
 
-        # 确定媒体类型
         media_type_map = {
             "wav": "audio/wav",
-            "pcm": "audio/raw",  # 原始PCM，推荐用于流式
+            "pcm": "audio/raw",
             "mp3": "audio/mpeg",
             "opus": "audio/opus",
             "aac": "audio/aac",
-            "flac": "audio/flac"
+            "flac": "audio/flac",
         }
         media_type = media_type_map.get(request.response_format, "audio/wav")
 
-        # 添加采样率到媒体类型（对于raw PCM）
         if request.response_format == "pcm":
             media_type = "audio/l16;rate=24000;channels=1"
 
-        async def audio_stream_generator():
-            """异步音频流生成器"""
-            try:
-                # 调用真正的流式合成方法
-                result_gen = engine.custom_voice_synthesize_streaming_async(
-                    text=request.input,
-                    speaker=speaker,
-                    language="Chinese"  # OpenAI API 默认根据文本自动检测
-                )
+        ALLOWED_SPEAKERS = ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna"]
 
-                # 转换为音频流（根据格式决定是否添加WAV头）
-                # 对于 PCM/RAW 格式，不添加文件头，客户端可以立即播放
-                use_header = (request.response_format == "wav")
-                async for wav_chunk in stream_result_to_wav(result_gen, initial_header=use_header, response_format=request.response_format):
+        def get_allowed_presets():
+            if voice_library:
+                return list(voice_library.get_all_design_presets().keys())
+            return []
+
+        def get_allowed_clones():
+            if voice_library:
+                return [
+                    c.get("name")
+                    for c in voice_library.get_all_clones()
+                    if c.get("name")
+                ]
+            return []
+
+        async def audio_stream_generator():
+            try:
+                if service_mode == "customvoice":
+                    default_speaker = get_service_speaker()
+                    speaker = default_speaker
+
+                    if voice_param:
+                        mapped = VOICE_MAPPING.get(voice_param, voice_param)
+                        if mapped in ALLOWED_SPEAKERS:
+                            speaker = mapped
+                            log_message(
+                                f"[STREAMING] Using requested speaker: {speaker}"
+                            )
+                        else:
+                            log_message(
+                                f"[STREAMING] Voice '{voice_param}' not in allowed speakers, using default: {default_speaker}"
+                            )
+
+                    result_gen = engine.custom_voice_synthesize_streaming_async(
+                        text=request.input, speaker=speaker, language="Chinese"
+                    )
+
+                elif service_mode == "voicedesign":
+                    default_preset = get_service_preset()
+                    preset = default_preset
+                    design_prompt = ""
+
+                    if voice_param:
+                        allowed_presets = get_allowed_presets()
+                        if voice_param in allowed_presets:
+                            preset = voice_param
+                            log_message(f"[STREAMING] Using requested preset: {preset}")
+                        else:
+                            log_message(
+                                f"[STREAMING] Voice '{voice_param}' not in allowed presets, using default: {default_preset}"
+                            )
+
+                    if preset and voice_library:
+                        design_prompt = (
+                            voice_library.get_design_preset(preset) or preset
+                        )
+
+                    result_gen = engine.voice_design_synthesize_streaming_async(
+                        text=request.input,
+                        design_prompt=design_prompt,
+                        language="Chinese",
+                    )
+
+                elif service_mode == "base":
+                    clone_prompt = get_service_clone_prompt()
+
+                    if voice_param:
+                        allowed_clones = get_allowed_clones()
+                        if voice_param in allowed_clones:
+                            for clone in voice_library.get_all_clones():
+                                if clone.get("name") == voice_param:
+                                    clone_id = clone.get("id")
+                                    if clone_id:
+                                        clone_data = voice_library.get_clone(clone_id)
+                                        if clone_data and clone_data.get(
+                                            "prompt_features"
+                                        ):
+                                            clone_prompt = clone_data["prompt_features"]
+                                            log_message(
+                                                f"[STREAMING] Using requested clone: {voice_param}"
+                                            )
+                                    break
+                        else:
+                            log_message(
+                                f"[STREAMING] Voice '{voice_param}' not in allowed clones, using default"
+                            )
+
+                    result_gen = engine.voice_clone_synthesize_streaming_async(
+                        text=request.input, clone_prompt=clone_prompt
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Unknown service mode: {service_mode}",
+                    )
+
+                use_header = request.response_format == "wav"
+                async for wav_chunk in stream_result_to_wav(
+                    result_gen,
+                    initial_header=use_header,
+                    response_format=request.response_format,
+                ):
                     yield wav_chunk
 
+            except HTTPException:
+                raise
             except Exception as e:
-                log_message(f"OpenAI Streaming TTS Error: {str(e)}", 'error')
-                logger.exception("Unexpected error in OpenAI streaming TTS synthesis")
+                log_message(f"Streaming TTS Error: {str(e)}", "error")
+                logger.exception("Unexpected error in streaming TTS synthesis")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Internal server error: {str(e)}"
+                    detail=f"Internal server error: {str(e)}",
                 )
 
-        # 记录成功
         log_message(
-            f"[REAL-STREAMING] OpenAI TTS Success: Starting stream (format={request.response_format})",
-            'info'
+            f"[STREAMING] Starting stream (mode={service_mode}, format={request.response_format})",
+            "info",
         )
 
-        # 返回音频流
-        # 添加完整的禁缓冲响应头以确保客户端实时接收数据
         return StreamingResponse(
             audio_stream_generator(),
             media_type=media_type,
@@ -432,20 +536,19 @@ async def openai_tts_streaming(
                 "Cache-Control": "no-cache, no-store, must-revalidate",
                 "Pragma": "no-cache",
                 "Expires": "0",
-                "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
-                "Transfer-Encoding": "chunked",  # 明确标识分块传输
-                "Connection": "keep-alive",  # 保持连接
-                "X-Content-Type-Options": "nosniff"
-            }
+                "X-Accel-Buffering": "no",
+                "Transfer-Encoding": "chunked",
+                "Connection": "keep-alive",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        log_message(f"OpenAI Streaming TTS Error: {str(e)}", 'error')
+        log_message(f"OpenAI Streaming TTS Error: {str(e)}", "error")
         logger.exception("Unexpected error in OpenAI streaming TTS endpoint")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
+            detail=f"Internal server error: {str(e)}",
         )
-

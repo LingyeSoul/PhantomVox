@@ -379,6 +379,18 @@ class PhantomUI:
         """
         return await self.get_tts_engine()
 
+    def _get_sync_tts_engine_for_service(self):
+        """
+        为 TTS 服务提供同步的引擎获取器
+
+        注意：此方法返回已加载的引擎或 None，不会触发加载。
+        这是为了解决 API 路由中同步访问引擎属性的问题。
+
+        Returns:
+            SafeTTSEngineProxy | None: TTS 引擎代理或 None
+        """
+        return self._tts_engine
+
     @property
     def tts_engine(self):  # 同步访问器
         """
@@ -623,16 +635,38 @@ class PhantomUI:
         return self.model_manager_view
 
     def _get_tts_service_view(self) -> ft.Control:
-        """获取 TTS 服务视图（延迟初始化）"""
         if self.tts_service_view is None:
             self.tts_service_view = TTSServiceView(
                 page=self.page,
-                tts_engine_getter=self._get_tts_engine_for_view,
+                tts_engine_getter=self._get_sync_tts_engine_for_service,
                 terminal=self.terminal,
                 config_manager=self.config_manager,
-                on_service_state_change=self._on_service_state_change
+                model_manager=self.model_manager,
+                voice_library=self.voice_library,
+                on_service_state_change=self._on_service_state_change,
+                on_load_model=self._load_model_for_service
             )
         return self.tts_service_view
+
+    async def _load_model_for_service(self, model_type: str) -> bool:
+        model_id = self._select_model_by_type(model_type)
+        if not model_id:
+            self.terminal.add_log(f"✗ 没有可用的 {model_type} 类型模型")
+            return False
+        try:
+            self._current_model_id = model_id
+            self._tts_engine = await self._load_model_async(model_id)
+            self._engine_loading_event.set()
+            return True
+        except Exception as e:
+            self.terminal.add_log(f"✗ 模型加载失败: {str(e)}")
+            return False
+
+    def _select_model_by_type(self, model_type: str) -> str | None:
+        usable = self.model_manager.list_usable_models_by_type(model_type)
+        if usable:
+            return usable[0]
+        return None
 
     def _on_service_state_change(self, running: bool):
         """处理服务状态变化"""

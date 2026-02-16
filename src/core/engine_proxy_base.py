@@ -37,9 +37,10 @@ class BaseEngineProxy:
         engine = self._engine_getter()
         if engine is None:
             raise RuntimeError(
-                "TTS 引擎不可用 - 可能未初始化或已卸载。"
-                "请确保模型已正确加载。"
+                "TTS 引擎不可用 - 可能未初始化或已卸载。请确保模型已正确加载。"
             )
+        while hasattr(engine, "_engine") and engine._engine is not None:
+            engine = engine._engine
         return engine
 
     def _log(self, message: str):
@@ -59,7 +60,7 @@ class BaseEngineProxy:
         speaker: str = "Vivian",
         language: str = "Chinese",
         instruct: str = "",
-        **kwargs
+        **kwargs,
     ) -> Tuple[np.ndarray, int]:
         """
         Custom Voice 异步合成
@@ -83,15 +84,11 @@ class BaseEngineProxy:
             args=(text, speaker, language, instruct),
             kwargs=kwargs,
             description=f"Custom Voice: {text[:30]}",
-            priority=5
+            priority=5,
         )
 
     async def voice_design_synthesize_async(
-        self,
-        text: str,
-        design_prompt: str,
-        language: str = "Chinese",
-        **kwargs
+        self, text: str, design_prompt: str, language: str = "Chinese", **kwargs
     ) -> Tuple[np.ndarray, int]:
         """
         Voice Design 异步合成
@@ -114,7 +111,7 @@ class BaseEngineProxy:
             args=(text, design_prompt, language),
             kwargs=kwargs,
             description=f"Voice Design: {text[:30]}",
-            priority=5
+            priority=5,
         )
 
     async def voice_clone_synthesize_async(
@@ -124,7 +121,7 @@ class BaseEngineProxy:
         ref_text: Optional[str] = None,
         clone_prompt=None,
         x_vector_only: bool = False,
-        **kwargs
+        **kwargs,
     ) -> Tuple[np.ndarray, int]:
         """
         Voice Clone 异步合成
@@ -149,14 +146,11 @@ class BaseEngineProxy:
             args=(text, ref_audio, ref_text, clone_prompt, x_vector_only),
             kwargs=kwargs,
             description=f"Voice Clone: {text[:30]}",
-            priority=5
+            priority=5,
         )
 
     async def create_voice_clone_prompt_async(
-        self,
-        ref_audio: str,
-        ref_text: str,
-        x_vector_only: bool = False
+        self, ref_audio: str, ref_text: str, x_vector_only: bool = False
     ):
         """
         创建声音克隆提示词
@@ -177,7 +171,7 @@ class BaseEngineProxy:
             func=engine.create_voice_clone_prompt_async,
             args=(ref_audio, ref_text, x_vector_only),
             description="创建 Voice Clone Prompt",
-            priority=5
+            priority=5,
         )
 
     # ========== 流式合成方法 ==========
@@ -191,7 +185,7 @@ class BaseEngineProxy:
         emit_every_frames: int = 8,
         decode_window_frames: int = 80,
         overlap_samples: int = 240,
-        **kwargs
+        **kwargs,
     ) -> AsyncGenerator[Tuple[np.ndarray, int], None]:
         """
         Custom Voice 流式合成
@@ -220,9 +214,9 @@ class BaseEngineProxy:
                 "emit_every_frames": emit_every_frames,
                 "decode_window_frames": decode_window_frames,
                 "overlap_samples": overlap_samples,
-                **kwargs
+                **kwargs,
             },
-            description=f"流式 Custom Voice: {text[:30]}"
+            description=f"流式 Custom Voice: {text[:30]}",
         )
 
         async for chunk, sr in stream_gen:
@@ -236,7 +230,7 @@ class BaseEngineProxy:
         emit_every_frames: int = 8,
         decode_window_frames: int = 80,
         overlap_samples: int = 240,
-        **kwargs
+        **kwargs,
     ) -> AsyncGenerator[Tuple[np.ndarray, int], None]:
         """
         Voice Design 流式合成
@@ -264,9 +258,9 @@ class BaseEngineProxy:
                 "emit_every_frames": emit_every_frames,
                 "decode_window_frames": decode_window_frames,
                 "overlap_samples": overlap_samples,
-                **kwargs
+                **kwargs,
             },
-            description=f"流式 Voice Design: {text[:30]}"
+            description=f"流式 Voice Design: {text[:30]}",
         )
 
         async for chunk, sr in stream_gen:
@@ -282,7 +276,7 @@ class BaseEngineProxy:
         emit_every_frames: int = 8,
         decode_window_frames: int = 80,
         overlap_samples: int = 240,
-        **kwargs
+        **kwargs,
     ) -> AsyncGenerator[Tuple[np.ndarray, int], None]:
         """
         Voice Clone 流式合成
@@ -312,9 +306,9 @@ class BaseEngineProxy:
                 "emit_every_frames": emit_every_frames,
                 "decode_window_frames": decode_window_frames,
                 "overlap_samples": overlap_samples,
-                **kwargs
+                **kwargs,
             },
-            description=f"流式 Voice Clone: {text[:30]}"
+            description=f"流式 Voice Clone: {text[:30]}",
         )
 
         async for chunk, sr in stream_gen:
@@ -330,7 +324,7 @@ class BaseEngineProxy:
         first_chunk_emit_every: int = 5,
         first_chunk_decode_window: int = 48,
         first_chunk_frames: int = 48,
-        **kwargs
+        **kwargs,
     ) -> AsyncGenerator[Tuple[list, int], None]:
         """
         Voice Clone 批量流式合成
@@ -363,9 +357,9 @@ class BaseEngineProxy:
                 "first_chunk_emit_every": first_chunk_emit_every,
                 "first_chunk_decode_window": first_chunk_decode_window,
                 "first_chunk_frames": first_chunk_frames,
-                **kwargs
+                **kwargs,
             },
-            description=f"批量流式 Voice Clone: {len(texts)} 个文本"
+            description=f"批量流式 Voice Clone: {len(texts)} 个文本",
         )
 
         async for chunks_list, sr in stream_gen:
@@ -382,7 +376,7 @@ class BaseEngineProxy:
         first_chunk_emit_every: int = 5,
         first_chunk_decode_window: int = 48,
         first_chunk_frames: int = 48,
-        **kwargs
+        **kwargs,
     ) -> AsyncGenerator[Tuple[list, int], None]:
         """
         Custom Voice 批量流式合成
@@ -415,9 +409,9 @@ class BaseEngineProxy:
                 "first_chunk_emit_every": first_chunk_emit_every,
                 "first_chunk_decode_window": first_chunk_decode_window,
                 "first_chunk_frames": first_chunk_frames,
-                **kwargs
+                **kwargs,
             },
-            description=f"批量流式 Custom Voice: {len(texts)} 个文本"
+            description=f"批量流式 Custom Voice: {len(texts)} 个文本",
         )
 
         async for chunks_list, sr in stream_gen:
@@ -433,7 +427,7 @@ class BaseEngineProxy:
         first_chunk_emit_every: int = 5,
         first_chunk_decode_window: int = 48,
         first_chunk_frames: int = 48,
-        **kwargs
+        **kwargs,
     ) -> AsyncGenerator[Tuple[list, int], None]:
         """
         Voice Design 批量流式合成
@@ -465,9 +459,9 @@ class BaseEngineProxy:
                 "first_chunk_emit_every": first_chunk_emit_every,
                 "first_chunk_decode_window": first_chunk_decode_window,
                 "first_chunk_frames": first_chunk_frames,
-                **kwargs
+                **kwargs,
             },
-            description=f"批量流式 Voice Design: {len(texts)} 个文本"
+            description=f"批量流式 Voice Design: {len(texts)} 个文本",
         )
 
         async for chunks_list, sr in stream_gen:
@@ -485,9 +479,7 @@ class BaseEngineProxy:
 
         engine = self._get_engine()
         await self._task_engine.submit(
-            task_type=TaskType.UNLOAD,
-            func=engine.unload,
-            description="卸载 TTS 引擎"
+            task_type=TaskType.UNLOAD, func=engine.unload, description="卸载 TTS 引擎"
         )
 
     def unload(self):
