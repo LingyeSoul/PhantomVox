@@ -14,27 +14,17 @@ from typing import Optional
 
 from api.models import OpenAITTSRequest
 from api.dependencies import get_tts_engine, log_message
+from api.constants import VOICE_MAPPING, ALLOWED_SPEAKERS, DEFAULT_SPEAKER
 
 router = APIRouter(prefix="/v1")
 logger = logging.getLogger(__name__)
-
-
-# OpenAI voice 到内部说话人的映射
-VOICE_MAPPING = {
-    "alloy": "Vivian",      # 明亮略带个性的年轻女性
-    "echo": "Serena",       # 温柔温柔的年轻女性
-    "fable": "Uncle_Fu",    # 沉稳的中年男性
-    "onyx": "Dylan",        # 清晰自然的北京男性
-    "nova": "Eric",         # 活泼的成都男性
-    "shimmer": "Ono_Anna",  # 活泼日本女性
-}
 
 
 @router.post("/audio/speech")
 async def openai_tts(
     request: OpenAITTSRequest,
     authorization: Optional[str] = Header(None),
-    engine=Depends(get_tts_engine)
+    engine=Depends(get_tts_engine),
 ):
     """
     OpenAI 兼容的 TTS 端点
@@ -99,14 +89,14 @@ async def openai_tts(
         log_message(
             f"OpenAI TTS Request: model={request.model}, voice={request.voice} -> {speaker}, "
             f"text='{request.input[:50]}...'",
-            'info'
+            "info",
         )
 
         # 调用内部 TTS 引擎
         audio_data, sample_rate = await engine.custom_voice_synthesize_async(
             text=request.input,
             speaker=speaker,
-            language="Chinese"  # OpenAI API 默认根据文本自动检测
+            language="Chinese",  # OpenAI API 默认根据文本自动检测
         )
 
         # 根据格式返回音频
@@ -135,7 +125,7 @@ async def openai_tts(
         # 记录成功
         log_message(
             f"OpenAI TTS Success: {len(audio_data)} samples, {sample_rate}Hz, format={request.response_format}",
-            'info'
+            "info",
         )
 
         # 返回音频流
@@ -144,15 +134,15 @@ async def openai_tts(
             media_type=media_type,
             headers={
                 "Content-Disposition": f'attachment; filename="speech.{request.response_format}"'
-            }
+            },
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        log_message(f"OpenAI TTS Error: {str(e)}", 'error')
+        log_message(f"OpenAI TTS Error: {str(e)}", "error")
         logger.exception("Unexpected error in OpenAI TTS synthesis")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
+            detail=f"Internal server error: {str(e)}",
         )

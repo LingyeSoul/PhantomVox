@@ -10,11 +10,14 @@ import numpy as np
 import base64
 import io
 import logging
+import asyncio
 from typing import Optional
 
 from api.models import TTSRequest, TTSResponse
 from api.dependencies import get_tts_engine, get_voice_library, log_message
 from api.routes.status import get_stats
+from api.utils.clone_lookup import find_clone
+from api.constants import DEFAULT_TTS_TIMEOUT
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -25,7 +28,7 @@ async def synthesize_speech(
     request: TTSRequest,
     engine=Depends(get_tts_engine),
     voice_library=Depends(get_voice_library),
-    stats=Depends(get_stats)
+    stats=Depends(get_stats),
 ):
     """
     文本转语音合成
@@ -70,90 +73,69 @@ async def synthesize_speech(
         "mode": "voice_clone",
         "clone_name": "我的克隆音色"
     }
-    ```
     """
+    timeout = request.timeout if request.timeout is not None else DEFAULT_TTS_TIMEOUT
+
     try:
         # 记录请求
         log_message(
-            f"TTS Request: mode={request.mode}, text='{request.text[:50]}...'",
-            'info'
+            f"TTS Request: mode={request.mode}, text='{request.text[:50]}...'", "info"
         )
+
+        audio_data = None
+        sample_rate = 24000
 
         # 根据模式调用相应的合成方法
         if request.mode == "custom_voice":
-            audio_data, sample_rate = await engine.custom_voice_synthesize_async(
-                text=request.text,
-                speaker=request.speaker,
-                language=request.language,
-                instruct=request.instruct
+            audio_data, sample_rate = await asyncio.wait_for(
+                engine.custom_voice_synthesize_async(
+                    text=request.text,
+                    speaker=request.speaker,
+                    language=request.language,
+                    instruct=request.instruct,
+                ),
+                timeout=timeout,
             )
 
         elif request.mode == "voice_design":
-            audio_data, sample_rate = await engine.voice_design_synthesize_async(
-                text=request.text,
-                design_prompt=request.design_prompt,
-                language=request.language
+            audio_data, sample_rate = await asyncio.wait_for(
+                engine.voice_design_synthesize_async(
+                    text=request.text,
+                    design_prompt=request.design_prompt,
+                    language=request.language,
+                ),
+                timeout=timeout,
             )
 
         elif request.mode == "voice_clone":
-            # 从 VoiceLibrary 查找克隆音色
-            if voice_library is None:
-                stats.record_request(success=False)
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Voice library not available"
-                )
+            clone = find_clone(voice_library, request.clone_id, request.clone_name)
 
-            clone = None
-
-            # 优先按名称查找
-            if request.clone_name:
-                for c in voice_library.get_all_clones():
-                    if c["name"] == request.clone_name:
-                        clone = c
-                        break
-
-                # 如果按名称找到多个或未找到，且提供了 clone_id，则使用 clone_id
-                if (clone is None or
-                    len([c for c in voice_library.get_all_clones()
-                         if c["name"] == request.clone_name]) > 1):
-                    if request.clone_id:
-                        clone = voice_library.get_clone(request.clone_id)
-
-            elif request.clone_id:
-                clone = voice_library.get_clone(request.clone_id)
-
-            if not clone:
-                stats.record_request(success=False)
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"克隆音色未找到：clone_id={request.clone_id}, clone_name={request.clone_name}"
-                )
-
-            # 使用克隆音色进行合成
-            # 优先使用预计算的特征（如果存在）
             if "prompt_features" in clone and clone["prompt_features"]:
-                # 使用预计算特征（快速）
-                # 注意：ref_audio 和 ref_text 是必需参数，即使使用 clone_prompt
-                audio_data, sample_rate = await engine.voice_clone_synthesize_async(
-                    text=request.text,
-                    ref_audio=clone["ref_audio"],  # 必需参数，会被忽略
-                    ref_text=clone["ref_text"],      # 必需参数，会被忽略
-                    clone_prompt=clone["prompt_features"]
+                audio_data, sample_rate = await asyncio.wait_for(
+                    engine.voice_clone_synthesize_async(
+                        text=request.text,
+                        ref_audio=clone["ref_audio"],
+                        ref_text=clone["ref_text"],
+                        clone_prompt=clone["prompt_features"],
+                    ),
+                    timeout=timeout,
                 )
             else:
                 # 降级：重新计算特征
-                audio_data, sample_rate = await engine.voice_clone_synthesize_async(
-                    text=request.text,
-                    ref_audio=clone["ref_audio"],
-                    ref_text=clone["ref_text"]
+                audio_data, sample_rate = await asyncio.wait_for(
+                    engine.voice_clone_synthesize_async(
+                        text=request.text,
+                        ref_audio=clone["ref_audio"],
+                        ref_text=clone["ref_text"],
+                    ),
+                    timeout=timeout,
                 )
 
         else:
             stats.record_request(success=False)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid mode: {request.mode}"
+                detail=f"Invalid mode: {request.mode}",
             )
 
         # 转换音频为 WAV 格式
@@ -162,30 +144,34 @@ async def synthesize_speech(
         audio_bytes = audio_buffer.getvalue()
 
         # 编码为 base64
-        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+        audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
 
         # 记录成功
         stats.record_request(success=True)
-        log_message(
-            f"TTS Success: {len(audio_data)} samples, {sample_rate}Hz",
-            'info'
-        )
+        log_message(f"TTS Success: {len(audio_data)} samples, {sample_rate}Hz", "info")
 
         return TTSResponse(
             audio=audio_base64,
             format="wav",
             sample_rate=sample_rate,
-            duration=len(audio_data) / sample_rate
+            duration=len(audio_data) / sample_rate,
         )
 
+    except asyncio.TimeoutError:
+        stats.record_request(success=False)
+        log_message(f"TTS Timeout: exceeded {timeout}s", "error")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Synthesis timeout: exceeded {timeout} seconds",
+        )
     except HTTPException:
         # 重新抛出 HTTP 异常
         raise
     except Exception as e:
         stats.record_request(success=False)
-        log_message(f"TTS Error: {str(e)}", 'error')
+        log_message(f"TTS Error: {str(e)}", "error")
         logger.exception("Unexpected error in TTS synthesis")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
+            detail=f"Internal server error: {str(e)}",
         )

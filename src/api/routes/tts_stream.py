@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.responses import StreamingResponse
 import logging
 import struct
+import asyncio
 import numpy as np
 from typing import Optional, AsyncGenerator, Tuple
 
@@ -22,25 +23,16 @@ from api.dependencies import (
     get_service_clone_prompt,
 )
 from api.routes.status import get_stats
+from api.utils.clone_lookup import find_clone
+from api.constants import (
+    VOICE_MAPPING,
+    ALLOWED_SPEAKERS,
+    DEFAULT_SPEAKER,
+    STREAMING_TIMEOUT,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-# OpenAI voice 到内部说话人的映射
-VOICE_MAPPING = {
-    "alloy": "Vivian",
-    "echo": "Serena",
-    "fable": "Uncle_Fu",
-    "onyx": "Dylan",
-    "nova": "Eric",
-    "shimmer": "Ono_Anna",
-}
-
-
-# ============================================
-# 辅助函数
-# ============================================
 
 
 def create_wav_header(sample_rate: int, num_samples: int) -> bytes:
@@ -177,6 +169,8 @@ async def synthesize_speech_streaming(
                 f.write(chunk)
     ```
     """
+    timeout = request.timeout if request.timeout is not None else STREAMING_TIMEOUT
+
     try:
         # 记录请求
         log_message(
@@ -212,58 +206,16 @@ async def synthesize_speech_streaming(
                     )
 
                 elif request.mode == "voice_clone":
-                    # 从 VoiceLibrary 查找克隆音色
-                    if voice_library is None:
-                        stats.record_request(success=False)
-                        raise HTTPException(
-                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Voice library not available",
-                        )
+                    clone = find_clone(
+                        voice_library, request.clone_id, request.clone_name
+                    )
 
-                    clone = None
-
-                    # 优先按名称查找
-                    if request.clone_name:
-                        for c in voice_library.get_all_clones():
-                            if c["name"] == request.clone_name:
-                                clone = c
-                                break
-
-                        # 如果按名称找到多个或未找到，且提供了 clone_id，则使用 clone_id
-                        if (
-                            clone is None
-                            or len(
-                                [
-                                    c
-                                    for c in voice_library.get_all_clones()
-                                    if c["name"] == request.clone_name
-                                ]
-                            )
-                            > 1
-                        ):
-                            if request.clone_id:
-                                clone = voice_library.get_clone(request.clone_id)
-
-                    elif request.clone_id:
-                        clone = voice_library.get_clone(request.clone_id)
-
-                    if not clone:
-                        stats.record_request(success=False)
-                        raise HTTPException(
-                            status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"克隆音色未找到：clone_id={request.clone_id}, clone_name={request.clone_name}",
-                        )
-
-                    # 使用克隆音色进行流式合成
-                    # 优先使用预计算的特征（如果存在）
                     if "prompt_features" in clone and clone["prompt_features"]:
-                        # 使用预计算特征（快速）
                         result_gen = engine.voice_clone_synthesize_streaming_async(
                             text=request.text,
                             voice_clone_prompt=clone["prompt_features"],
                         )
                     else:
-                        # 降级：重新计算特征
                         result_gen = engine.voice_clone_synthesize_streaming_async(
                             text=request.text,
                             ref_audio=clone["ref_audio"],
@@ -311,6 +263,13 @@ async def synthesize_speech_streaming(
             },
         )
 
+    except asyncio.TimeoutError:
+        stats.record_request(success=False)
+        log_message(f"Streaming TTS Timeout: exceeded {timeout}s", "error")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Streaming synthesis timeout: exceeded {timeout} seconds",
+        )
     except HTTPException:
         # 重新抛出 HTTP 异常
         raise
@@ -339,8 +298,8 @@ async def openai_tts_streaming(
     **支持的格式**：
     - wav: 标准WAV格式（带文件头）
     - pcm: 原始PCM数据（无文件头，推荐用于流式播放）
-    - mp3: MP3格式（未来支持）
-    - opus: Opus格式（未来支持）
+
+    **暂未实现**：mp3, opus, aac, flac
 
     **使用 curl 调用示例**：
     ```bash
@@ -376,7 +335,6 @@ async def openai_tts_streaming(
     with open("speech.pcm", "wb") as f:
         for chunk in response.iter_bytes(chunk_size=4096):
             f.write(chunk)
-    ```
     """
     try:
         service_mode = get_service_mode()
@@ -395,20 +353,21 @@ async def openai_tts_streaming(
                 detail="Streaming is not enabled",
             )
 
+        UNSUPPORTED_FORMATS = ["mp3", "opus", "aac", "flac"]
+        if request.response_format in UNSUPPORTED_FORMATS:
+            logger.warning(
+                f"Format '{request.response_format}' not implemented, falling back to wav"
+            )
+            request.response_format = "wav"
+
         media_type_map = {
             "wav": "audio/wav",
             "pcm": "audio/raw",
-            "mp3": "audio/mpeg",
-            "opus": "audio/opus",
-            "aac": "audio/aac",
-            "flac": "audio/flac",
         }
         media_type = media_type_map.get(request.response_format, "audio/wav")
 
         if request.response_format == "pcm":
             media_type = "audio/l16;rate=24000;channels=1"
-
-        ALLOWED_SPEAKERS = ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna"]
 
         def get_allowed_presets():
             if voice_library:
