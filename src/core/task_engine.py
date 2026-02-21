@@ -15,45 +15,34 @@ logger = logging.getLogger(__name__)
 
 class TaskType(Enum):
     """任务类型枚举"""
+
     GENERATE = "generate"  # 推理任务
-    UNLOAD = "unload"      # 卸载任务
-    LOAD = "load"          # 加载任务
-    CUSTOM = "custom"      # 自定义任务
+    UNLOAD = "unload"  # 卸载任务
+    LOAD = "load"  # 加载任务
+    CUSTOM = "custom"  # 自定义任务
 
 
 class Task:
-    """任务对象"""
-
     def __init__(
         self,
         task_type: TaskType,
         func: Callable,
         args: tuple = (),
-        kwargs: dict = None,
+        kwargs: Optional[dict] = None,
         priority: int = 0,
-        description: str = ""
+        description: str = "",
+        model_id: Optional[str] = None,
     ):
-        """
-        初始化任务
-
-        Args:
-            task_type: 任务类型
-            func: 要执行的函数
-            args: 位置参数
-            kwargs: 关键字参数
-            priority: 优先级（数字越大优先级越高）
-            description: 任务描述（用于日志）
-        """
         self.task_type = task_type
         self.func = func
         self.args = args
         self.kwargs = kwargs or {}
         self.priority = priority
         self.description = description or f"{task_type.value}_task"
+        self.model_id = model_id
         self.future: Optional[asyncio.Future] = None
 
     def __lt__(self, other):
-        """用于优先级队列排序（优先级高的在前）"""
         return self.priority > other.priority
 
     def __repr__(self):
@@ -84,6 +73,7 @@ class TaskEngine:
         self._lock = asyncio.Lock()  # 改用 asyncio.Lock 适配异步环境
         self._current_task: Optional[Task] = None
         self._task_count = 0  # 已处理任务计数
+        self._loaded_model_id: Optional[str] = None
 
         logger.info("任务引擎已初始化")
 
@@ -142,19 +132,26 @@ class TaskEngine:
                         # 同步函数在线程池中执行
                         loop = asyncio.get_event_loop()
                         result = await loop.run_in_executor(
-                            None,
-                            lambda: task.func(*task.args, **task.kwargs)
+                            None, lambda: task.func(*task.args, **task.kwargs)
                         )
 
-                    # 设置结果
                     if task.future and not task.future.cancelled():
                         task.future.set_result(result)
+
+                    if task.task_type == TaskType.LOAD and task.model_id:
+                        self._loaded_model_id = task.model_id
+                        logger.info(f"任务引擎记录已加载模型: {task.model_id}")
+                    elif task.task_type == TaskType.UNLOAD:
+                        self._loaded_model_id = None
+                        logger.info("任务引擎清除已加载模型记录")
 
                     logger.info(f"✓ 任务完成 [{self._task_count}]: {task.description}")
                     self._task_count += 1
 
                 except Exception as e:
-                    logger.error(f"✗ 任务失败 [{self._task_count}]: {task.description} - {str(e)}")
+                    logger.error(
+                        f"✗ 任务失败 [{self._task_count}]: {task.description} - {str(e)}"
+                    )
                     if task.future and not task.future.cancelled():
                         task.future.set_exception(e)
 
@@ -175,48 +172,32 @@ class TaskEngine:
         task_type: TaskType,
         func: Callable,
         args: tuple = (),
-        kwargs: dict = None,
+        kwargs: Optional[dict] = None,
         priority: int = 0,
-        description: str = ""
+        description: str = "",
+        model_id: Optional[str] = None,
     ) -> Any:
-        """
-        提交任务并等待完成
-
-        Args:
-            task_type: 任务类型
-            func: 要执行的函数
-            args: 位置参数
-            kwargs: 关键字参数
-            priority: 优先级（数字越大优先级越高）
-            description: 任务描述
-
-        Returns:
-            任务执行结果
-
-        Raises:
-            Exception: 任务执行失败时抛出异常
-        """
-        # 自动启动任务引擎
         if not self._running:
             await self.start()
 
-        # 创建任务
         task = Task(
             task_type=task_type,
             func=func,
             args=args,
             kwargs=kwargs,
             priority=priority,
-            description=description
+            description=description,
+            model_id=model_id,
         )
 
-        # 创建 Future 用于等待结果
         task.future = asyncio.Future()
 
         # 加入队列
         await self._queue.put(task)
 
-        logger.info(f"任务已加入队列: {task.description} (队列长度: {self._queue.qsize()})")
+        logger.info(
+            f"任务已加入队列: {task.description} (队列长度: {self._queue.qsize()})"
+        )
 
         # 等待任务完成
         return await task.future
@@ -226,8 +207,8 @@ class TaskEngine:
         task_type: TaskType,
         func: Callable,
         args: tuple = (),
-        kwargs: dict = None,
-        description: str = ""
+        kwargs: Optional[dict] = None,
+        description: str = "",
     ):
         """
         提交流式生成任务
@@ -275,13 +256,15 @@ class TaskEngine:
             task_type=task_type,
             func=streaming_worker,
             description=description,
-            priority=0  # 统一优先级
+            priority=0,  # 统一优先级
         )
         task.future = asyncio.Future()
 
         # 加入队列
         await self._queue.put(task)
-        logger.info(f"流式任务已加入队列: {description} (队列长度: {self._queue.qsize()})")
+        logger.info(
+            f"流式任务已加入队列: {description} (队列长度: {self._queue.qsize()})"
+        )
 
         # 等待任务开始执行
         await started.wait()
@@ -305,7 +288,9 @@ class TaskEngine:
                         if exception:
                             raise exception
                         else:
-                            raise RuntimeError("Streaming task failed with unknown error")
+                            raise RuntimeError(
+                                "Streaming task failed with unknown error"
+                            )
 
                 # 正常数据项 - yield出去
                 yield item
@@ -317,9 +302,9 @@ class TaskEngine:
         task_type: TaskType,
         func: Callable,
         args: tuple = (),
-        kwargs: dict = None,
+        kwargs: Optional[dict] = None,
         priority: int = 0,
-        description: str = ""
+        description: str = "",
     ) -> asyncio.Task:
         """
         同步提交任务（不等待完成），返回 asyncio.Task
@@ -336,16 +321,20 @@ class TaskEngine:
 
         Returns:
             asyncio.Task: 可以 await 的任务对象
+
+        Raises:
+            RuntimeError: 在没有运行事件循环的同步上下文中调用
         """
         # 自动启动任务引擎
         if not self._running:
-            # 在同步上下文中无法直接 await，需要创建任务
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
+            try:
+                loop = asyncio.get_running_loop()
                 # 事件循环正在运行，创建启动任务
                 asyncio.create_task(self.start())
-            else:
-                # 事件循环未运行，需要在后台启动
+            except RuntimeError:
+                # 没有运行的事件循环，创建新循环并启动
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 loop.run_until_complete(self.start())
 
         # 创建异步任务
@@ -356,7 +345,7 @@ class TaskEngine:
                 args=args,
                 kwargs=kwargs,
                 priority=priority,
-                description=description
+                description=description,
             )
 
         return asyncio.create_task(_submit_and_wait())
@@ -378,26 +367,26 @@ class TaskEngine:
 
     @property
     def is_busy(self) -> bool:
-        """是否正在执行任务"""
         return self._current_task is not None
 
+    def get_loaded_model_id(self) -> Optional[str]:
+        return self._loaded_model_id
+
+    @property
+    def loaded_model_id(self) -> Optional[str]:
+        return self._loaded_model_id
+
     async def wait_until_idle(self):
-        """等待所有任务完成"""
         await self._queue.join()
 
     def get_status(self) -> Dict[str, Any]:
-        """
-        获取任务引擎状态
-
-        Returns:
-            包含状态信息的字典
-        """
         return {
             "running": self._running,
             "queue_size": self._queue.qsize(),
             "current_task": str(self._current_task) if self._current_task else None,
             "is_busy": self.is_busy,
-            "task_count": self._task_count
+            "task_count": self._task_count,
+            "loaded_model_id": self._loaded_model_id,
         }
 
 

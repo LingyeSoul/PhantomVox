@@ -10,9 +10,29 @@ PhantomVox TTS 模块
 - prompt_manager: Voice Clone Prompt 管理
 - audio_manager: 音频管理
 - exceptions: 异常定义
+- srt_parser: SRT字幕解析
+- srt_batch_engine: SRT批量推理引擎
 """
 
 from .qwen_engine import QwenEngine
 from .audio_manager import AudioManager
+from .srt_parser import SRTParser, SRTEntry, ScheduledEntry
+from .srt_batch_engine import SRTBatchEngine, SRTBatchResult
+from .srt_config_models import CustomVoiceConfig, VoiceDesignConfig, VoiceCloneConfig
+from .timeline_scheduler import TimelineScheduler
+from .audio_assembler import AudioAssembler
 
-__all__ = ["QwenEngine", "AudioManager"]
+__all__ = [
+    "QwenEngine",
+    "AudioManager",
+    "SRTParser",
+    "SRTEntry",
+    "ScheduledEntry",
+    "SRTBatchEngine",
+    "SRTBatchResult",
+    "CustomVoiceConfig",
+    "VoiceDesignConfig",
+    "VoiceCloneConfig",
+    "TimelineScheduler",
+    "AudioAssembler",
+]
