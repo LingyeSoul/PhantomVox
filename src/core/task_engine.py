@@ -375,6 +375,113 @@ class TaskEngine:
     @property
     def loaded_model_id(self) -> Optional[str]:
         return self._loaded_model_id
+    async def load_model(
+        self,
+        load_func: Callable,
+        model_id: str,
+        args: tuple = (),
+        kwargs: Optional[dict] = None,
+        description: str = "",
+    ) -> Any:
+        """
+        通过任务引擎加载模型的便捷方法
+
+        Args:
+            load_func: 加载函数（同步或异步）
+            model_id: 模型ID，用于跟踪已加载的模型
+            args: 位置参数
+            kwargs: 关键字参数
+            description: 任务描述
+
+        Returns:
+            加载结果
+        """
+        return await self.submit(
+            task_type=TaskType.LOAD,
+            func=load_func,
+            args=args,
+            kwargs=kwargs,
+            description=description or f"加载模型: {model_id}",
+            priority=10,
+            model_id=model_id,
+        )
+
+    async def unload_model(
+        self,
+        unload_func: Callable,
+        args: tuple = (),
+        kwargs: Optional[dict] = None,
+        description: str = "",
+    ) -> Any:
+        """
+        通过任务引擎卸载模型的便捷方法
+
+        Args:
+            unload_func: 卸载函数（同步或异步）
+            args: 位置参数
+            kwargs: 关键字参数
+            description: 任务描述
+
+        Returns:
+            卸载结果
+        """
+        return await self.submit(
+            task_type=TaskType.UNLOAD,
+            func=unload_func,
+            args=args,
+            kwargs=kwargs,
+            description=description or "卸载模型",
+            priority=10,
+        )
+
+    async def switch_model(
+        self,
+        unload_func: Callable,
+        load_func: Callable,
+        model_id: str,
+        unload_args: tuple = (),
+        unload_kwargs: Optional[dict] = None,
+        load_args: tuple = (),
+        load_kwargs: Optional[dict] = None,
+        description: str = "",
+    ) -> Any:
+        """
+        切换模型（先卸载后加载）
+
+        采用简单的卸载-加载策略，不实现热切换。
+        适用于显存有限无法同时加载多个大模型的场景。
+
+        Args:
+            unload_func: 卸载函数
+            load_func: 加载函数
+            model_id: 新模型ID
+            unload_args: 卸载函数位置参数
+            unload_kwargs: 卸载函数关键字参数
+            load_args: 加载函数位置参数
+            load_kwargs: 加载函数关键字参数
+            description: 任务描述
+
+        Returns:
+            加载结果
+        """
+        # 步骤1: 卸载旧模型
+        await self.unload_model(
+            unload_func=unload_func,
+            args=unload_args,
+            kwargs=unload_kwargs,
+            description=f"切换模型 - 卸载旧模型",
+        )
+
+        # 步骤2: 加载新模型
+        return await self.load_model(
+            load_func=load_func,
+            model_id=model_id,
+            args=load_args,
+            kwargs=load_kwargs,
+            description=description or f"切换模型 - 加载 {model_id}",
+        )
+
+
 
     async def wait_until_idle(self):
         await self._queue.join()

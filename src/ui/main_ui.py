@@ -177,6 +177,8 @@ class PhantomUI:
         dtype,
         attn_implementation: str,
         shared_tokenizer_path: Optional[str],
+        smart_vram_enabled: bool = True,
+        delay_cleanup_seconds: int = 60,
     ) -> QwenEngine:
         """
         创建 Qwen 引擎（延迟加载模式）
@@ -196,6 +198,8 @@ class PhantomUI:
             enable_streaming=True,
             streaming_decode_window=80,
             lazy_load=True,  # 延迟加载模式
+            smart_vram_enabled=smart_vram_enabled,
+            delay_cleanup_seconds=delay_cleanup_seconds,
         )
 
     def _load_qwen_engine_sync(self, engine: QwenEngine):
@@ -230,6 +234,10 @@ class PhantomUI:
             attn_implementation = self.config_manager.get(
                 "model.attn_implementation", "sdpa"
             )
+            # 获取智能显存管理配置
+            smart_vram_enabled = self.config_manager.get("model.smart_vram", True)
+            delay_cleanup_seconds = self.config_manager.get("model.delay_cleanup_seconds", 60)
+            logger.info(f"智能显存管理: {smart_vram_enabled}, 延迟清理: {delay_cleanup_seconds}秒")
 
             model_info = self.model_manager.get_model_info(model_id)
             self.terminal.add_log(
@@ -262,6 +270,8 @@ class PhantomUI:
                 dtype=dtype,
                 attn_implementation=attn_implementation,
                 shared_tokenizer_path=shared_tokenizer_path,
+                smart_vram_enabled=smart_vram_enabled,
+                delay_cleanup_seconds=delay_cleanup_seconds,
             )
 
             await self.task_engine.submit(
@@ -644,7 +654,7 @@ class PhantomUI:
                 voice_library=self.voice_library,
                 config_manager=self.config_manager,
                 model_manager=self.model_manager,
-                on_clear_engine_cache=lambda model_id: self._clear_tts_engine_cache(
+                on_clear_engine_cache=lambda model_id=None: self._clear_tts_engine_cache(
                     model_id
                 ),
                 on_load_model=self._load_model_for_srt,

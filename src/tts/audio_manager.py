@@ -568,7 +568,8 @@ class AudioManager:
         try:
             normalized_data = self._normalize_audio_data(audio_data)
             return len(normalized_data) / self.sample_rate
-        except:
+        except Exception as e:
+            logger.warning(f"计算音频时长失败: {e}")
             return 0.0
 
     # ==================== 状态查询 ====================

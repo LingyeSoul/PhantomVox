@@ -48,7 +48,9 @@ class ConfigManager:
                     "dtype": "bfloat16",  # 数据类型: bfloat16, float16, float32
                     "attn_implementation": "sdpa",  # 注意力实现: sdpa, flash_attention_2
                     "sample_rate": 24000,
-                    "auto_download": True  # 自动下载缺失的模型
+                    "auto_download": True,  # 自动下载缺失的模型
+                    "smart_vram": True,  # 智能显存管理：卸载时先移到CPU，延迟清除
+                    "delay_cleanup_seconds": 60  # 延迟清理时间（秒）
                 },
 
                 # 音频设置
@@ -72,6 +74,13 @@ class ConfigManager:
                     "port": 8848,
                     "auto_start": False,
                     "host": "0.0.0.0"
+                },
+
+                # API 安全设置
+                "security": {
+                    "api_key": "",  # API 密钥，留空则不启用认证
+                    "cors_origins": ["*"],  # CORS 允许的来源
+                    "rate_limit_per_minute": 60  # 每分钟请求限流
                 },
                 }
         self.config = self.load_config()

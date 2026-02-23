@@ -4,6 +4,7 @@
 
 from fastapi import APIRouter, Depends
 from api.models import StatusResponse
+from core.task_engine import get_task_engine
 
 router = APIRouter()
 
@@ -72,11 +73,20 @@ async def get_status(host: str = "0.0.0.0", port: int = 8848, running: bool = Tr
     返回服务器统计信息和运行状态
     """
     stats = _stats.get_stats()
+    # 获取任务引擎状态
+    task_engine = get_task_engine()
+    engine_status = task_engine.get_status()
+    
     return {
         "success": True,
         "host": host,
         "port": port,
         "running": running,
+        # 模型状态
+        "loaded_model_id": engine_status.get("loaded_model_id"),
+        "is_busy": engine_status.get("is_busy", False),
+        "queue_size": engine_status.get("queue_size", 0),
+        # 请求统计
         **stats
     }
 

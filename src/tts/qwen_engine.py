@@ -49,6 +49,8 @@ class QwenEngine:
         enable_streaming: bool = True,
         streaming_decode_window: int = 80,
         lazy_load: bool = False,
+        smart_vram_enabled: bool = True,
+        delay_cleanup_seconds: int = 60,
     ):
         self.model_path = model_path
         self.model_type = model_type
@@ -58,6 +60,8 @@ class QwenEngine:
         self.shared_tokenizer_path = shared_tokenizer_path
         self.enable_streaming = enable_streaming
         self.streaming_decode_window = streaming_decode_window
+        self.smart_vram_enabled = smart_vram_enabled
+        self.delay_cleanup_seconds = delay_cleanup_seconds
 
         self.model_loader = ModelLoader(
             model_path=model_path,
@@ -68,6 +72,8 @@ class QwenEngine:
             shared_tokenizer_path=shared_tokenizer_path,
             enable_streaming=enable_streaming,
             streaming_decode_window=streaming_decode_window,
+            smart_vram_enabled=smart_vram_enabled,
+            delay_cleanup_seconds=delay_cleanup_seconds,
         )
         self.model = None
         self.prompt_manager = None
@@ -982,7 +988,23 @@ class QwenEngine:
 
     def unload(self):
         """卸载模型并释放资源"""
-        self.model_loader.unload()
+        # 根据 smart_vram 配置选择卸载方式
+        if self.smart_vram_enabled:
+            # 智能显存模式：调用异步方法（需要事件循环）
+            # 检查是否有事件循环
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                # 在同步上下文中调用异步方法
+                asyncio.create_task(self.model_loader.unload_async())
+                logger.info("已启动智能显存卸载任务")
+            except RuntimeError:
+                # 没有运行中的事件循环，使用同步方式
+                logger.warning("无法获取事件循环，使用同步卸载")
+                self.model_loader.unload()
+        else:
+            # 非智能模式：直接同步清理
+            self.model_loader.unload()
         self.model = None
         self.prompt_manager = None
 
@@ -993,8 +1015,8 @@ class QwenEngine:
         if self.model:
             try:
                 return self.model.get_supported_speakers()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"获取说话人列表失败: {e}")
         return [
             "Vivian",
             "Serena",
@@ -1012,8 +1034,8 @@ class QwenEngine:
         if self.model:
             try:
                 return self.model.get_supported_languages()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"获取语言列表失败: {e}")
         return ["Chinese", "English", "Japanese", "Korean", "Auto"]
 
     # ========== 兼容旧 API ==========

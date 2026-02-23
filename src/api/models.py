@@ -127,6 +127,13 @@ class StatusResponse(TTSSuccessResponse):
     host: str = Field(..., description="监听地址")
     port: int = Field(..., description="监听端口")
     running: bool = Field(..., description="是否运行中")
+    # 模型状态
+    loaded_model_id: Optional[str] = Field(
+        default=None, description="当前加载的模型ID"
+    )
+    is_busy: bool = Field(default=False, description="任务引擎是否繁忙")
+    queue_size: int = Field(default=0, description="任务队列长度")
+    # 请求统计
     total_requests: int = Field(default=0, description="总请求数")
     successful_requests: int = Field(default=0, description="成功请求数")
     failed_requests: int = Field(default=0, description="失败请求数")

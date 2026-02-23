@@ -554,6 +554,8 @@ class SRTBatchView(ft.Container):
                 self.srt_file_text.color = ft.Colors.GREEN
                 self.terminal.add_log(f"已选择SRT文件: {filename}")
                 self._load_subtitle_preview()
+        except Exception as ex:
+            logger.error(f"选择SRT文件失败: {ex}")
 
     def _load_subtitle_preview(self):
         """加载字幕预览"""
@@ -611,11 +613,6 @@ class SRTBatchView(ft.Container):
         except Exception as e:
             self.terminal.add_log(f"加载字幕预览失败: {e}")
 
-    def _get_selected_model_id(self) -> Optional[str]:
-        except Exception as ex:
-            logger.error(f"选择SRT文件失败: {ex}")
-            self.terminal.add_log(f"选择文件失败: {ex}")
-
     async def _on_pick_ref_audio(self, e):
         """选择参考音频"""
         try:
@@ -635,62 +632,6 @@ class SRTBatchView(ft.Container):
                     pass
         except Exception as ex:
             logger.error(f"选择参考音频失败: {ex}")
-
-    def _load_subtitle_preview(self):
-        """加载字幕预览"""
-        if not self._srt_file_path:
-            return
-
-        try:
-            from tts.srt_parser import SRTParser
-
-            parser = SRTParser()
-            entries = parser.parse_file(self._srt_file_path)
-
-            self.subtitle_list.controls.clear()
-            for entry in entries[:20]:  # 只显示前20条
-                text_display = (
-                    entry.text[:50] + "..." if len(entry.text) > 50 else entry.text
-                )
-                item = ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Text(
-                                f"{entry.index}. {entry.start_time:.2f}s - {entry.end_time:.2f}s",
-                                size=11,
-                                weight=ft.FontWeight.BOLD,
-                            ),
-                            ft.Text(
-                                text_display,
-                                size=11,
-                            ),
-                        ],
-                        spacing=2,
-                    ),
-                    padding=5,
-                    bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.ON_SURFACE),
-                    border_radius=4,
-                )
-                self.subtitle_list.controls.append(item)
-
-            if len(entries) > 20:
-                self.subtitle_list.controls.append(
-                    ft.Text(
-                        f"... 还有 {len(entries) - 20} 条字幕", size=11, italic=True
-                    )
-                )
-
-            self.result_text.value = f"共 {len(entries)} 条字幕"
-            self.result_text.color = ft.Colors.BLUE
-
-            try:
-                self.subtitle_list.update()
-                self.result_text.update()
-            except:
-                pass
-
-        except Exception as e:
-            self.terminal.add_log(f"加载字幕预览失败: {e}")
 
     def _get_selected_model_id(self) -> Optional[str]:
         if self.current_mode == TTS_MODE_CUSTOM_VOICE:
@@ -739,8 +680,10 @@ class SRTBatchView(ft.Container):
                         priority=15,
                     )
 
-            if self.on_clear_engine_cache:
-                self.on_clear_engine_cache()
+            # 注意：卸载已通过 task_engine 完成，无需再调用 on_clear_engine_cache
+            # 否则会触发异步卸载，可能把刚加载的新模型也卸载掉
+            # 但需要清除 task_engine 中的模型记录，确保 on_load_model 会重新加载
+            self.task_engine._loaded_model_id = None
 
             self.progress_text.value = "正在加载新模型..."
             try:

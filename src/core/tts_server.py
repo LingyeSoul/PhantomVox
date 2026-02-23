@@ -76,14 +76,49 @@ def create_fastapi_app(
         lifespan=lifespan
     )
 
-    # 配置 CORS
+    # 配置 CORS - 从配置中读取允许的来源
+    cors_origins = ["*"]  # 默认允许所有
+    try:
+        from config.config_manager import config_manager
+        configured_origins = config_manager.get("security.cors_origins", ["*"])
+        if configured_origins:
+            cors_origins = configured_origins
+    except Exception:
+        pass  # 使用默认值
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # 生产环境应限制具体域名
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization"],
     )
+
+    # 配置限流 - 从配置中读取限流设置
+    try:
+        from config.config_manager import config_manager
+        rate_limit = config_manager.get("security.rate_limit_per_minute", 60)
+        
+        # 添加限流中间件
+        from slowapi import Limiter
+        from slowapi.util import get_remote_address
+        
+        limiter = Limiter(key_func=get_remote_address)
+        app.state.limiter = limiter
+        
+        @app.exception_handler(limiter._default_rate_limit_exceeded_handler)
+        async def rate_limit_handler(request, exc):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded. Please try again later."}
+            )
+        
+        logger.info(f"Rate limiting enabled: {rate_limit} requests per minute")
+    except ImportError:
+        logger.warning("slowapi not installed, rate limiting disabled")
+    except Exception as e:
+        logger.warning(f"Failed to configure rate limiting: {e}")
 
     # 注册路由
     app.include_router(health.router, tags=["Health"])

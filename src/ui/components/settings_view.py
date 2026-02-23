@@ -275,6 +275,13 @@ class SettingsView(ft.Container):
         )
         self.auto_download_switch.on_change = lambda e: self._on_setting_changed("model.auto_download", e.control.value)
 
+        # 智能显存管理
+        self.smart_vram_switch = ft.Switch(
+            label="智能显存管理",
+            value=False
+        )
+        self.smart_vram_switch.on_change = lambda e: self._on_setting_changed("model.smart_vram", e.control.value)
+
         return ft.Column([
             ft.Text("模型设置", size=18, weight=ft.FontWeight.BOLD),
             ft.Divider(),
@@ -315,6 +322,18 @@ class SettingsView(ft.Container):
                 content=ft.Column([
                     self.auto_download_switch,
                     ft.Text("启用后，使用缺失模型时会自动下载", size=11, color=ft.Colors.GREY_400),
+                ], spacing=5),
+                padding=15,
+                bgcolor=ft.Colors.with_opacity(0.03, ft.Colors.ON_SURFACE),
+                border_radius=8
+            ),
+
+            ft.Container(height=15),
+
+            ft.Container(
+                content=ft.Column([
+                    self.smart_vram_switch,
+                    ft.Text("打开：卸载模型时先移到CPU，1分钟后未重新加载自动清除 | 关闭：卸载时直接清除，不移到CPU", size=11, color=ft.Colors.GREY_400),
                 ], spacing=5),
                 padding=15,
                 bgcolor=ft.Colors.with_opacity(0.03, ft.Colors.ON_SURFACE),
@@ -504,6 +523,7 @@ class SettingsView(ft.Container):
             # 采样率固定为 24000Hz，由模型决定，不从配置读取
             # self.sample_rate_dropdown.value = self._config_manager.get("model.sample_rate", 24000)
             self.auto_download_switch.value = self._config_manager.get("model.auto_download", True)
+            self.smart_vram_switch.value = self._config_manager.get("model.smart_vram", True)
 
             # 音频设置
             self.format_dropdown.value = self._config_manager.get("audio.output_format", "wav")

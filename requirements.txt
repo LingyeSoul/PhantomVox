@@ -30,3 +30,7 @@ fastapi>=0.128.0
 uvicorn>=0.40.0
 pydantic>=2.12.5
 python-multipart>=0.0.22
+
+
+# Rate limiting
+slowapi>=0.1.9
