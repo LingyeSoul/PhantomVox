@@ -845,6 +845,33 @@ class SRTBatchView(ft.Container):
             self._is_processing = False
             self.start_button.disabled = False
             self.progress_ring.visible = False
+
+            # 清理 batch_engine 和音频数据，释放显存
+            if self.batch_engine:
+                # 清空音频数据列表，释放 numpy array 内存
+                if hasattr(self.batch_engine, 'generated_audios'):
+                    self.batch_engine.generated_audios.clear()
+                if hasattr(self.batch_engine, 'audio_durations'):
+                    self.batch_engine.audio_durations.clear()
+                if hasattr(self.batch_engine, 'scheduler'):
+                    # 清理 scheduler 中的音频数据
+                    scheduler = self.batch_engine.scheduler
+                    if hasattr(scheduler, 'scheduled') and scheduler.scheduled:
+                        for entry in scheduler.scheduled:
+                            if hasattr(entry, 'audio_data') and entry.audio_data is not None:
+                                entry.audio_data = None
+                self.batch_engine = None
+
+            # 强制垃圾回收，释放显存
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except:
+                pass
+
             try:
                 self._page.update()
             except:

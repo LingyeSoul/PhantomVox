@@ -273,12 +273,14 @@ class ModelLoader:
                         try:
                             self.model.model.cpu()
                             self._model_on_cpu = True
-                            logger.info("✓ 模型已移至 CPU，等待定时清理...")
+                            logger.info("✓ 模型已移至 CPU")
                         except Exception as e:
                             logger.warning(f"将模型移至 CPU 失败: {e}")
-                    # 启动定时清理任务
+                    # 立即清理 CUDA 缓存，释放显存
+                    self._cleanup_cuda_memory()
+                    # 启动定时清理任务（用于最终清理）
                     self._cleanup_timer = asyncio.create_task(self._delayed_cleanup())
-                    logger.info(f"✓ 定时清理任务已启动，将在 {self.delay_cleanup_seconds} 秒后清除模型")
+                    logger.info(f"✓ 显存已释放，定时清理任务已启动")
                 else:
                     # 非智能模式：直接清除模型
                     self._force_cleanup()
