@@ -479,8 +479,8 @@ class BaseVoiceView(ft.Container):
             logger.error(f"停止播放失败: {str(e)}", exc_info=True)
 
     async def _on_save(self, e):
-        """保存音频"""
         import os
+        from utils.dialog_utils import ConfirmDialogHelper
 
         if not self._temp_audio_file:
             self.terminal.add_log("没有可保存的音频")
@@ -491,20 +491,50 @@ class BaseVoiceView(ft.Container):
             output_format = self.config_manager.get("audio.output_format", "wav")
             custom_filename = self.audio_filename_input.value.strip() if self.audio_filename_input.value else None
 
-            save_path = self._audio_temp_manager.save_to_persistent(
-                self._temp_audio_file,
+            target_path = self._audio_temp_manager.get_persistent_target_path(
                 save_dir,
                 prefix=self._get_save_prefix(),
                 custom_filename=custom_filename,
                 output_format=output_format
             )
 
-            self.terminal.add_log(f"音频已保存: {save_path}")
-            filename = os.path.basename(save_path)
-            self._page.show_dialog(ft.SnackBar(
-                ft.Text(f"音频已保存: {filename}"),
-                bgcolor=ft.Colors.GREEN
-            ))
+            def do_save():
+                try:
+                    save_path = self._audio_temp_manager.save_to_persistent(
+                        self._temp_audio_file,
+                        save_dir,
+                        prefix=self._get_save_prefix(),
+                        custom_filename=custom_filename,
+                        output_format=output_format,
+                        target_path=target_path
+                    )
+                        self._temp_audio_file,
+                        save_dir,
+                        prefix=self._get_save_prefix(),
+                        custom_filename=custom_filename,
+                        output_format=output_format
+                    )
+                    self.terminal.add_log(f"音频已保存: {save_path}")
+                    filename = os.path.basename(save_path)
+                    self._page.show_dialog(ft.SnackBar(
+                        ft.Text(f"音频已保存: {filename}"),
+                        bgcolor=ft.Colors.GREEN
+                    ))
+                except Exception as ex:
+                    logger.error(f"保存音频失败: {str(ex)}", exc_info=True)
+                    self.terminal.add_log(f"保存失败: {str(ex)}")
+                    self._page.show_dialog(ft.SnackBar(
+                        ft.Text(f"保存失败: {str(ex)}"),
+                        bgcolor=ft.Colors.RED
+                    ))
+
+            if os.path.exists(target_path):
+                filename = os.path.basename(target_path)
+                helper = ConfirmDialogHelper(self._page)
+                helper.show_overwrite_dialog(filename, on_confirm=do_save)
+            else:
+                do_save()
+
         except Exception as e:
             logger.error(f"保存音频失败: {str(e)}", exc_info=True)
             self.terminal.add_log(f"保存失败: {str(e)}")
@@ -516,23 +546,19 @@ class BaseVoiceView(ft.Container):
     def _auto_save_audio(self):
         if not self._last_audio:
             return
-
         try:
             audio_data, sample_rate = self._last_audio
             save_dir = self.config_manager.get("audio.save_directory", "./output")
             output_format = self.config_manager.get("audio.output_format", "wav")
-
-            save_path = self._audio_temp_manager.save_audio_to_format(
                 audio_data,
                 sample_rate,
                 save_dir,
                 prefix=self._get_save_prefix(),
                 output_format=output_format
             )
-
             self.terminal.add_log(f"音频已自动保存: {save_path}")
         except Exception as e:
-            logger.error(f"自动保存音频失败: {str(e)}")
+            logger.error(f"自动保存音频失败: {str(e)}", exc_info=True)
             self.terminal.add_log(f"自动保存失败: {str(e)}")
 
     def _cleanup_gpu_memory(self):

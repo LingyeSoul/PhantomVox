@@ -1034,6 +1034,7 @@ class SRTBatchView(ft.Container):
 
         try:
             import shutil
+            from utils.dialog_utils import ConfirmDialogHelper
 
             save_dir = self.config_manager.get("audio.save_directory", "./output")
             os.makedirs(save_dir, exist_ok=True)
@@ -1056,18 +1057,23 @@ class SRTBatchView(ft.Container):
 
             dest_path = os.path.join(save_dir, base_name)
 
-            counter = 1
-            while os.path.exists(dest_path):
-                name_without_ext = base_name.rsplit(".", 1)[0]
-                dest_path = os.path.join(save_dir, f"{name_without_ext}_{counter}.wav")
-                counter += 1
+            def do_save():
+                try:
+                    shutil.copy2(self._last_output_path, dest_path)
+                    self.terminal.add_log(f"音频已保存: {dest_path}")
+                    self._show_snack_bar(
+                        f"已保存: {os.path.basename(dest_path)}", ft.Colors.GREEN
+                    )
+                except Exception as ex:
+                    logger.error(f"保存失败: {ex}")
+                    self.terminal.add_log(f"保存失败: {ex}")
 
-            shutil.copy2(self._last_output_path, dest_path)
+            if os.path.exists(dest_path):
+                helper = ConfirmDialogHelper(self._page)
+                helper.show_overwrite_dialog(base_name, on_confirm=do_save)
+            else:
+                do_save()
 
-            self.terminal.add_log(f"音频已保存: {dest_path}")
-            self._show_snack_bar(
-                f"已保存: {os.path.basename(dest_path)}", ft.Colors.GREEN
-            )
         except Exception as e:
             logger.error(f"保存失败: {e}")
             self.terminal.add_log(f"保存失败: {e}")
