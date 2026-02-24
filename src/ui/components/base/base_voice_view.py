@@ -539,12 +539,50 @@ class BaseVoiceView(ft.Container):
             ))
 
     def _auto_save_audio(self):
+        import os
+        from pathlib import Path
+
+        if not self._last_audio:
+            return
+
+        try:
+            audio_data, sample_rate = self._last_audio
+            save_dir = self.config_manager.get("audio.save_directory", "./output")
+            output_format = self.config_manager.get("audio.output_format", "wav")
+            prefix = self._get_save_prefix()
+
+            target_path = self._audio_temp_manager.get_audio_to_format_target_path(
+                save_dir,
+                prefix=prefix,
+                output_format=output_format
+            )
+
+            final_path = target_path
+            counter = 1
+            while os.path.exists(final_path):
+                name_without_ext = Path(target_path).stem
+                final_path = str(Path(save_dir) / f"{name_without_ext}_{counter}.{output_format}")
+                counter += 1
+
+            save_path = self._audio_temp_manager.save_audio_to_format(
+                audio_data,
+                sample_rate,
+                save_dir,
+                prefix=prefix,
+                output_format=output_format,
+                target_path=final_path
+            )
+            self.terminal.add_log(f"音频已自动保存: {save_path}")
+        except Exception as e:
+            logger.error(f"自动保存音频失败: {str(e)}", exc_info=True)
+            self.terminal.add_log(f"自动保存失败: {str(e)}")
         if not self._last_audio:
             return
         try:
             audio_data, sample_rate = self._last_audio
             save_dir = self.config_manager.get("audio.save_directory", "./output")
             output_format = self.config_manager.get("audio.output_format", "wav")
+            save_path = self._audio_temp_manager.save_audio_to_format(
                 audio_data,
                 sample_rate,
                 save_dir,
