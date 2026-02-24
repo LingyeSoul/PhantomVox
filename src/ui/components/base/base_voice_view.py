@@ -508,12 +508,7 @@ class BaseVoiceView(ft.Container):
                         output_format=output_format,
                         target_path=target_path
                     )
-                        self._temp_audio_file,
-                        save_dir,
-                        prefix=self._get_save_prefix(),
-                        custom_filename=custom_filename,
-                        output_format=output_format
-                    )
+
                     self.terminal.add_log(f"音频已保存: {save_path}")
                     filename = os.path.basename(save_path)
                     self._page.show_dialog(ft.SnackBar(
