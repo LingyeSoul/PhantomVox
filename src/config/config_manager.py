@@ -8,6 +8,7 @@ from utils.logger import app_logger
 class ConfigManager:
     _instance = None
     _lock = threading.Lock()
+    _initialized = False
 
     def __new__(cls, config_path=None):
         """
@@ -26,8 +27,7 @@ class ConfigManager:
         Args:
             config_path (str, optional): 配置文件路径，默认为当前目录下的config.json
         """
-        # 避免重复初始化
-        if hasattr(self, '_initialized'):
+        if ConfigManager._initialized:
             return
 
         if config_path is None:
@@ -89,7 +89,7 @@ class ConfigManager:
             self._check_and_set_env_type()
 
         # 标记为已初始化
-        self._initialized = True
+        ConfigManager._initialized = True
 
         # 注册退出时保存配置的函数
         atexit.register(self._save_on_exit)

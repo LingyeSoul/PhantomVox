@@ -139,9 +139,9 @@ async def synthesize_speech(
             )
 
         # 转换音频为 WAV 格式
-        audio_buffer = io.BytesIO()
-        wavfile.write(audio_buffer, sample_rate, audio_data)
-        audio_bytes = audio_buffer.getvalue()
+        with io.BytesIO() as audio_buffer:
+            wavfile.write(audio_buffer, sample_rate, audio_data)
+            audio_bytes = audio_buffer.getvalue()
 
         # 编码为 base64
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")

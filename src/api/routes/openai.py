@@ -108,9 +108,9 @@ async def openai_tts(
             media_type = "audio/l16;rate=24000;channels=1"
         else:
             # WAV 格式（默认）
-            audio_buffer = io.BytesIO()
-            wavfile.write(audio_buffer, sample_rate, audio_data)
-            audio_bytes = audio_buffer.getvalue()
+            with io.BytesIO() as audio_buffer:
+                wavfile.write(audio_buffer, sample_rate, audio_data)
+                audio_bytes = audio_buffer.getvalue()
 
             # 确定 media_type
             media_type_map = {
