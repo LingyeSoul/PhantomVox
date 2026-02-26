@@ -8,9 +8,11 @@ import os
 import logging
 import asyncio
 import gc
-from typing import Optional, Any
+from typing import Optional, Literal
 
 import torch
+
+OptimizationMode = Literal["streaming", "non_streaming"]
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +106,23 @@ def _patch_tokenizer_loading():
 
 
 class ModelLoader:
-    """Qwen3-TTS 模型加载器"""
+    """Qwen3-TTS 模型加载器
+    
+    提供模型的加载、卸载、优化模式切换和智能显存管理功能。
+    
+    Attributes:
+        model_path: 模型路径或 HuggingFace Hub ID
+        model_type: 模型类型标识
+        device: 加载设备 (如 "cuda:0", "cpu")
+        smart_vram_enabled: 是否启用智能显存管理
+        delay_cleanup_seconds: 延迟清理的等待秒数
+    
+    Example:
+        loader = ModelLoader(model_path="/path/to/model", device="cuda:0")
+        loader.load()
+        # ... 使用模型 ...
+        await loader.unload_async()
+    """
 
     def __init__(
         self,
@@ -131,7 +149,7 @@ class ModelLoader:
         self.delay_cleanup_seconds = delay_cleanup_seconds
 
         self.model = None
-        self._current_optimization_mode = None
+        self._current_optimization_mode: Optional[OptimizationMode] = None
         self._optimization_lock = asyncio.Lock()
         self._cleanup_timer = None  # 定时清理任务
         self._model_on_cpu = False  # 标记模型是否已移到CPU
@@ -207,7 +225,7 @@ class ModelLoader:
             logger.error(f"✗ 模型加载失败: {str(e)}")
             raise
 
-    def _apply_optimizations(self, mode: str):
+    def _apply_optimizations(self, mode: OptimizationMode):
         """应用指定模式的优化配置"""
         if not self.model:
             return
@@ -240,7 +258,7 @@ class ModelLoader:
             logger.error(f"✗ 优化功能应用失败: {e}")
             raise
 
-    async def ensure_optimization_mode(self, mode: str):
+    async def ensure_optimization_mode(self, mode: OptimizationMode):
         """确保模型使用指定的优化模式"""
         if self._current_optimization_mode == mode:
             return
@@ -251,77 +269,83 @@ class ModelLoader:
 
             logger.info(f"正在切换优化模式: {self._current_optimization_mode} → {mode}")
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._apply_optimizations, mode)
 
             self._current_optimization_mode = mode
             logger.info(f"✓ 优化模式已切换至: {mode}")
 
-        async def unload_async(self):
-            """卸载模型并释放资源（异步方法，支持智能显存管理）"""
-            if self.model is None:
-                return
-            # 取消之前的定时清理任务
+    async def unload_async(self):
+        """卸载模型并释放资源（异步方法，支持智能显存管理）"""
+        if self.model is None:
+            return
+        try:
             if self._cleanup_timer and not self._cleanup_timer.done():
                 self._cleanup_timer.cancel()
                 logger.info("✓ 已取消之前的定时清理任务")
-            try:
-                logger.info("正在卸载 TTS 模型...")
-                if self.smart_vram_enabled:
-                    # 智能显存模式：先移到CPU，然后启动定时清理
-                    if hasattr(self.model, "model") and self.model.model is not None:
-                        try:
-                            self.model.model.cpu()
-                            self._model_on_cpu = True
-                            logger.info("✓ 模型已移至 CPU")
-                        except Exception as e:
-                            logger.warning(f"将模型移至 CPU 失败: {e}")
-                    # 立即清理 CUDA 缓存，释放显存
-                    self._cleanup_cuda_memory()
-                    # 启动定时清理任务（用于最终清理）
-                    self._cleanup_timer = asyncio.create_task(self._delayed_cleanup())
-                    logger.info(f"✓ 显存已释放，定时清理任务已启动")
-                else:
-                    # 非智能模式：直接清除模型
-                    self._force_cleanup()
-                    logger.info("✓ 模型已直接清除（非智能模式）")
-            except Exception as e:
-                logger.error(f"✗ 模型卸载失败: {str(e)}")
-        def _force_cleanup(self):
-            """强制清理模型资源"""
-            def recursive_delete(module):
-                for name, child in list(module.named_children()):
-                    recursive_delete(child)
-                    delattr(module, name)
-                for name, param in list(module.named_parameters()):
-                    if param is not None:
-                        del param
-                for name, buffer in list(module.named_buffers()):
-                    if buffer is not None:
-                        del buffer
-            if hasattr(self.model, "model"):
-                recursive_delete(self.model.model)
-            if hasattr(self.model, "processor"):
-                del self.model.processor
-            del self.model
-            self.model = None
-            self._model_on_cpu = False
-            # 彻底清理 PyTorch 显存和缓存
-            self._cleanup_cuda_memory()
-        async def _delayed_cleanup(self):
-            """延迟清理模型（智能显存模式）"""
-            try:
-                await asyncio.sleep(self.delay_cleanup_seconds)
-                if self.model is None:
-                    return
-                logger.info("✓ 定时清理触发，正在清除模型...")
+            logger.info("正在卸载 TTS 模型...")
+            if self.smart_vram_enabled:
+                if hasattr(self.model, "model") and self.model.model is not None:
+                    try:
+                        self.model.model.cpu()
+                        self._model_on_cpu = True
+                        logger.info("✓ 模型已移至 CPU")
+                    except Exception as e:
+                        logger.warning(f"将模型移至 CPU 失败: {e}")
+                self._cleanup_cuda_memory()
+                self._cleanup_timer = asyncio.create_task(self._delayed_cleanup())
+                logger.info(f"✓ 显存已释放，定时清理任务已启动")
+            else:
                 self._force_cleanup()
-                logger.info("✓ 智能显存模式：模型已延迟清除")
-            except asyncio.CancelledError:
+                logger.info("✓ 模型已直接清除（非智能模式）")
+        except Exception as e:
+            logger.error(f"✗ 模型卸载失败: {str(e)}")
+
+    def _recursive_delete(self, module):
+        """删除模块的所有子模块、参数和缓冲区（迭代方式）"""
+        stack = [module]
+        while stack:
+            current = stack.pop()
+            for name, child in list(current.named_children()):
+                stack.append(child)
+                delattr(current, name)
+            for name, param in list(current.named_parameters()):
+                if param is not None:
+                    del param
+            for name, buffer in list(current.named_buffers()):
+                if buffer is not None:
+                    del buffer
+
+    def _force_cleanup(self):
+        """强制清理模型资源"""
+        if hasattr(self.model, "model"):
+            self._recursive_delete(self.model.model)
+        if hasattr(self.model, "processor"):
+            del self.model.processor
+        del self.model
+        self.model = None
+        self._model_on_cpu = False
+        self._cleanup_cuda_memory()
+
+    async def _delayed_cleanup(self):
+        """延迟清理模型（智能显存模式）"""
+        cleanup_completed = False
+        try:
+            await asyncio.sleep(self.delay_cleanup_seconds)
+            if self.model is None:
+                cleanup_completed = True
+                return
+            logger.info("✓ 定时清理触发，正在清除模型...")
+            self._force_cleanup()
+            cleanup_completed = True
+            logger.info("✓ 智能显存模式：模型已延迟清除")
+        except asyncio.CancelledError:
+            if not cleanup_completed:
                 logger.info("✓ 定时清理任务已被取消（模型重新加载）")
-                raise
-            except Exception as e:
-                logger.error(f"✗ 延迟清理失败: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"✗ 延迟清理失败: {str(e)}")
+
     def unload(self):
         """卸载模型并释放资源"""
         if self.model is None:
@@ -336,19 +360,8 @@ class ModelLoader:
                 except Exception:
                     pass
 
-            def recursive_delete(module):
-                for name, child in list(module.named_children()):
-                    recursive_delete(child)
-                    delattr(module, name)
-                for name, param in list(module.named_parameters()):
-                    if param is not None:
-                        del param
-                for name, buffer in list(module.named_buffers()):
-                    if buffer is not None:
-                        del buffer
-
             if hasattr(self.model, "model"):
-                recursive_delete(self.model.model)
+                self._recursive_delete(self.model.model)
 
             if hasattr(self.model, "processor"):
                 del self.model.processor
@@ -361,7 +374,6 @@ class ModelLoader:
         except Exception as e:
             logger.error(f"✗ 模型卸载失败: {str(e)}")
         finally:
-            # 彻底清理 PyTorch 显存和缓存
             self._cleanup_cuda_memory()
 
     def _cleanup_cuda_memory(self):
