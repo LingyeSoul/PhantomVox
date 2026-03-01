@@ -61,7 +61,7 @@ class NetworkManager:
         try:
             # 只有在缓存过期时才执行ipconfig命令获取网络配置信息
             self._log("IP缓存已过期，执行ipconfig命令获取新IP...", 'info')
-            result = subprocess.run(['ipconfig'], capture_output=True, text=True, shell=True)
+            result = subprocess.run(['ipconfig'], capture_output=True, text=True)
 
             if result.returncode != 0:
                 self._log(f"ipconfig命令执行失败: {result.stderr}", 'error')

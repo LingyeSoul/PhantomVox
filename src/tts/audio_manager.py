@@ -14,6 +14,8 @@ import asyncio
 from pathlib import Path
 from typing import Optional, Callable, Tuple
 from enum import Enum
+from api.constants import SAMPLE_RATE
+
 
 import flet as ft
 
@@ -45,7 +47,7 @@ class AudioManager:
         """
         self.page = page
         self.current_audio_data = None
-        self.sample_rate = 24000  # qwen-tts 默认采样率
+        self.sample_rate = SAMPLE_RATE  # qwen-tts 默认采样率
 
         # sounddevice 相关状态
         self._stream: Optional[sd.OutputStream] = None

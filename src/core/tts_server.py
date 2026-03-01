@@ -76,20 +76,25 @@ def create_fastapi_app(
         lifespan=lifespan
     )
 
-    # 配置 CORS - 从配置中读取允许的来源
-    cors_origins = ["*"]  # 默认允许所有
+    # 配置 CORS - 局域网环境默认允许所有来源
+    cors_origins = ["*"]
+    allow_credentials = False  # 通配符来源时必须禁用 credentials
+
     try:
         from config.config_manager import config_manager
-        configured_origins = config_manager.get("security.cors_origins", ["*"])
+        configured_origins = config_manager.get("security.cors_origins", None)
         if configured_origins:
+            # 如果配置了具体来源，启用 credentials
             cors_origins = configured_origins
-    except Exception:
-        pass  # 使用默认值
+            allow_credentials = True
+            logger.info(f"CORS configured with specific origins: {cors_origins}")
+    except Exception as e:
+        logger.warning(f"Failed to load CORS config: {e}")
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization"],
     )

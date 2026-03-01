@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Any
 from pathlib import Path
 from html.parser import HTMLParser
+from api.constants import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class ScheduledEntry:
     actual_start: float  # 调整后的开始时间
     actual_end: float  # 调整后的结束时间
     audio_data: Optional[Any] = None  # numpy array
-    sample_rate: int = 24000
+    sample_rate: int = SAMPLE_RATE
 
     @property
     def audio_duration(self) -> float:

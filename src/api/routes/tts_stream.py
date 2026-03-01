@@ -29,7 +29,9 @@ from api.constants import (
     ALLOWED_SPEAKERS,
     DEFAULT_SPEAKER,
     STREAMING_TIMEOUT,
+    SAMPLE_RATE,
 )
+from api.security import verify_api_key
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -120,6 +122,7 @@ async def stream_result_to_wav(
 @router.post("/tts/streaming")
 async def synthesize_speech_streaming(
     request: TTSRequest,
+    _: bool = Depends(verify_api_key),
     engine=Depends(get_tts_engine),
     voice_library=Depends(get_voice_library),
     stats=Depends(get_stats),
@@ -286,7 +289,7 @@ async def synthesize_speech_streaming(
 @router.post("/v1/audio/speech/streaming")
 async def openai_tts_streaming(
     request: OpenAITTSRequest,
-    authorization: Optional[str] = None,
+    _: bool = Depends(verify_api_key),
     engine=Depends(get_tts_engine),
 ):
     """
@@ -367,7 +370,7 @@ async def openai_tts_streaming(
         media_type = media_type_map.get(request.response_format, "audio/wav")
 
         if request.response_format == "pcm":
-            media_type = "audio/l16;rate=24000;channels=1"
+            media_type = f"audio/l16;rate={SAMPLE_RATE};channels=1"
 
         def get_allowed_presets():
             if voice_library:

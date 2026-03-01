@@ -15,6 +15,7 @@ from typing import Optional
 from api.models import OpenAITTSRequest
 from api.dependencies import get_tts_engine, log_message
 from api.constants import VOICE_MAPPING, ALLOWED_SPEAKERS, DEFAULT_SPEAKER
+from api.security import verify_api_key
 
 router = APIRouter(prefix="/v1")
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 @router.post("/audio/speech")
 async def openai_tts(
     request: OpenAITTSRequest,
-    authorization: Optional[str] = Header(None),
+    _: bool = Depends(verify_api_key),
     engine=Depends(get_tts_engine),
 ):
     """

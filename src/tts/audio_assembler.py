@@ -10,6 +10,8 @@ from typing import List, Tuple, Optional
 from pathlib import Path
 import numpy as np
 
+from api.constants import SAMPLE_RATE
+
 from .srt_parser import ScheduledEntry
 
 logger = logging.getLogger(__name__)
@@ -19,7 +21,7 @@ class AudioAssembler:
     """音频拼装器"""
 
     def __init__(
-        self, sample_rate: int = 24000, allowed_dirs: Optional[List[str]] = None
+        self, sample_rate: int = SAMPLE_RATE, allowed_dirs: Optional[List[str]] = None
     ):
         self.sample_rate = sample_rate
         if allowed_dirs is None:

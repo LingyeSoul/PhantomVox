@@ -8,6 +8,8 @@ import logging
 from typing import List, Tuple
 from dataclasses import dataclass
 
+from api.constants import SAMPLE_RATE
+
 from .srt_parser import SRTEntry, ScheduledEntry
 
 logger = logging.getLogger(__name__)
@@ -32,7 +34,7 @@ class TimelineScheduler:
     核心算法：检测音频时长与字幕时间的冲突并自动延后
     """
 
-    def __init__(self, gap_padding: float = 1.0, sample_rate: int = 24000):
+    def __init__(self, gap_padding: float = 1.0, sample_rate: int = SAMPLE_RATE):
         self.gap_padding = gap_padding
         self.sample_rate = sample_rate
         self.adjustments: List[TimelineAdjustment] = []

@@ -81,20 +81,21 @@ def split_by_sentences(text: str, language: str = "chinese") -> List[str]:
     parts = re.split(f'({sentence_endings})', text)
 
     sentences = []
-    current = ""
+    current_parts = []
 
     for part in parts:
-        current += part
+        current_parts.append(part)  # O(1) append
         # 检查是否到达句末
         if re.match(sentence_endings, part):
+            current = "".join(current_parts)
             stripped = current.strip()
             if stripped:
                 sentences.append(stripped)
-            current = ""
+            current_parts = []
 
     # 添加最后一个不完整的句子（如果没有以标点结尾）
-    if current.strip():
-        sentences.append(current.strip())
+    if current_parts:
+        sentences.append("".join(current_parts).strip())
 
     logger.debug(f"按句分割 ({language}): 输出 {len(sentences)} 个句子")
     return sentences

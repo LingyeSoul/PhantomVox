@@ -6,8 +6,6 @@
 
 import flet as ft
 import logging
-import numpy as np
-
 from ui.components.base import BaseVoiceView
 from ui.components.shared_controls import create_labeled_control
 
@@ -180,103 +178,33 @@ class CustomVoiceView(BaseVoiceView):
 
     async def _on_generate_batch_impl(self, texts: list, tts_engine, batch_size: int):
         """批量生成的具体实现"""
-        total = len(texts)
-        self.terminal.add_log(f"开始批量生成 {total} 个文本（每批最多 {batch_size} 个）...")
-
-        # 显示进度
-        self.batch_progress_text.visible = True
-        self.batch_progress_bar.visible = True
-        self.batch_progress_text.value = f"准备生成 {total} 个文本..."
-        self.batch_progress_bar.value = 0
-        self._page.update()
-
-        # 存储每个文本的音频块
-        item_chunks = [[] for _ in range(len(texts))]
-        sample_rate = 24000
-
-        # 分批处理
-        num_batches = (total + batch_size - 1) // batch_size
-
-        try:
-            for batch_idx in range(num_batches):
-                batch_start = batch_idx * batch_size
-                batch_end = min(batch_start + batch_size, total)
-                batch_texts = texts[batch_start:batch_end]
-                batch_num = batch_idx + 1
-
-                self.terminal.add_log(f"处理第 {batch_num}/{num_batches} 批 (文本 {batch_start+1}-{batch_end})...")
-
-                # 追踪当前批次每个文本的状态
-                item_started = [False] * len(batch_texts)
-                item_completed = [False] * len(batch_texts)
-
-                # 获取参数
-                speaker = self.speaker_dropdown.value
-                language = self.language_dropdown.value
-                instruct = self.instruct_input.value or ""
-
-                async for chunks_list, sr in tts_engine.custom_voice_batch_stream_synthesize_async(
-                    texts=batch_texts,
-                    speaker=speaker,
-                    language=language,
-                    instruct=instruct,
-                ):
-                    sample_rate = sr
-
-                    # 累积每个文本的音频块
-                    for i, chunk in enumerate(chunks_list):
-                        global_idx = batch_start + i
-                        if chunk.size > 0:
-                            item_chunks[global_idx].append(chunk)
-                            item_started[i] = True
-                        elif item_started[i] and not item_completed[i]:
-                            item_completed[i] = True
-
-                    # 计算进度
-                    batch_completed = sum(item_completed)
-                    global_completed = batch_start + batch_completed
-                    progress = global_completed / total
-
-                    self.batch_progress_text.value = f"批次 {batch_num}/{num_batches} - 已完成 {global_completed}/{total}"
-                    self.batch_progress_bar.value = progress
-                    self._page.update()
-
-                # 批次间显存清理
-                if batch_idx < num_batches - 1:
-                    self._cleanup_gpu_memory()
-                    self.terminal.add_log(f"批次 {batch_num}/{num_batches} 完成，已清理显存")
-
-            # 合并音频
-            self.terminal.add_log("正在合并音频...")
-            combined_audios = []
-            for i, chunks in enumerate(item_chunks):
-                if chunks:
-                    non_empty = [c for c in chunks if c.size > 0]
-                    if non_empty:
-                        combined = np.concatenate(non_empty)
-                        combined_audios.append(combined)
-                        self.terminal.add_log(f"  文本 {i+1}: {len(combined)/sample_rate:.2f}s")
-
-            if combined_audios:
-                final_audio = np.concatenate(combined_audios)
-                self._save_generated_audio(final_audio, sample_rate, "batch")
-
-                self.batch_progress_text.value = f"批量生成完成: {total} 个文本, 总时长 {len(final_audio)/sample_rate:.2f}s"
-                self.batch_progress_bar.value = 1.0
-                self.terminal.add_log(f"批量语音生成成功: {total} 个文本")
-
-                await self._on_play(None)
-            else:
-                self.batch_progress_text.value = "生成失败: 没有有效的音频"
-                self.terminal.add_log("批量生成失败: 没有生成任何音频")
-
-        except Exception as e:
-            logger.error(f"批量生成失败: {str(e)}", exc_info=True)
-            self.batch_progress_text.value = f"生成失败: {str(e)}"
-            raise
-        finally:
-            self._cleanup_gpu_memory()
-
+        speaker = self.speaker_dropdown.value
+        language = self.language_dropdown.value
+        instruct = self.instruct_input.value or ""
+        
+        # 保存配置
+        self.config_manager.set("custom_voice.default_speaker", speaker)
+        self.config_manager.set("custom_voice.default_language", language)
+        
+        self.terminal.add_log(f"说话人: {speaker}, 语言: {language}")
+        if instruct:
+            self.terminal.add_log(f"情感指令: {instruct}")
+        
+        def stream_method():
+            return tts_engine.custom_voice_batch_stream_synthesize_async(
+                texts=texts,
+                speaker=speaker,
+                language=language,
+                instruct=instruct,
+            )
+        
+        await self._execute_batch_generation(
+            texts=texts,
+            tts_engine=tts_engine,
+            batch_size=batch_size,
+            stream_method=stream_method,
+            prefix="batch"
+        )
     # ==================== 特有方法：情感预设 ====================
 
     def _on_emotion_preset(self, _, instruct: str):

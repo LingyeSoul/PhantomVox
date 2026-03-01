@@ -18,6 +18,8 @@ from api.dependencies import get_tts_engine, get_voice_library, log_message
 from api.routes.status import get_stats
 from api.utils.clone_lookup import find_clone
 from api.constants import DEFAULT_TTS_TIMEOUT
+from api.security import verify_api_key
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 @router.post("/tts", response_model=TTSResponse)
 async def synthesize_speech(
     request: TTSRequest,
+    _: bool = Depends(verify_api_key),
     engine=Depends(get_tts_engine),
     voice_library=Depends(get_voice_library),
     stats=Depends(get_stats),

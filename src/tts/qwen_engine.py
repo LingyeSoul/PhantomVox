@@ -234,15 +234,15 @@ class QwenEngine:
         gen = stream_generator()
         loop = asyncio.get_event_loop()
 
-        while True:
-            # 使用自定义函数包装 next，避免 StopIteration 在 Future 中的问题
-            def get_next_chunk():
-                try:
-                    return next(gen), False  # (chunk, is_stop)
-                except StopIteration:
-                    return None, True  # (None, is_stop)
+        def get_next_chunk(gen):
+            """Get next chunk from generator (moved outside loop for performance)"""
+            try:
+                return next(gen), False  # (chunk, is_stop)
+            except StopIteration:
+                return None, True  # (None, is_stop)
 
-            chunk_info, is_stop = await loop.run_in_executor(None, get_next_chunk)
+        while True:
+            chunk_info, is_stop = await loop.run_in_executor(None, lambda: get_next_chunk(gen))
             if is_stop:
                 break
             yield chunk_info
@@ -303,16 +303,19 @@ class QwenEngine:
             f"[Batch Streaming] 正在批量流式生成 {len(texts)} 个文本 (Custom Voice)..."
         )
 
-        # 为每个文本构建 input_ids
+        # 为每个文本构建 input_ids（批量处理优化）
+        assistant_texts = [
+            f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+            for text in texts
+        ]
+        batch_input = self.model.processor(
+            text=assistant_texts, return_tensors="pt", padding=True
+        )
+        batch_ids = batch_input["input_ids"].to(self.model.device)
+        # Split batch into individual tensors
         input_ids = []
-        for text in texts:
-            assistant_text = (
-                f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
-            )
-            inp = self.model.processor(
-                text=assistant_text, return_tensors="pt", padding=True
-            )
-            ids = inp["input_ids"].to(self.model.device)
+        for i in range(len(texts)):
+            ids = batch_ids[i:i+1] if batch_ids.dim() > 1 else batch_ids.unsqueeze(0)
             if ids.dim() == 1:
                 ids = ids.unsqueeze(0)
             input_ids.append(ids)
@@ -355,15 +358,15 @@ class QwenEngine:
         gen = batch_stream_generator()
         loop = asyncio.get_event_loop()
 
+        def get_next_batch(gen):
+            """Get next batch from generator (moved outside loop for performance)"""
+            try:
+                return next(gen), False
+            except StopIteration:
+                return None, True
+
         while True:
-
-            def get_next_batch():
-                try:
-                    return next(gen), False
-                except StopIteration:
-                    return None, True
-
-            batch_info, is_stop = await loop.run_in_executor(None, get_next_batch)
+            batch_info, is_stop = await loop.run_in_executor(None, lambda: get_next_batch(gen))
             if is_stop:
                 break
             yield batch_info

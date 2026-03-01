@@ -576,23 +576,7 @@ class BaseVoiceView(ft.Container):
         except Exception as e:
             logger.error(f"自动保存音频失败: {str(e)}", exc_info=True)
             self.terminal.add_log(f"自动保存失败: {str(e)}")
-        if not self._last_audio:
-            return
-        try:
-            audio_data, sample_rate = self._last_audio
-            save_dir = self.config_manager.get("audio.save_directory", "./output")
-            output_format = self.config_manager.get("audio.output_format", "wav")
-            save_path = self._audio_temp_manager.save_audio_to_format(
-                audio_data,
-                sample_rate,
-                save_dir,
-                prefix=self._get_save_prefix(),
-                output_format=output_format
-            )
-            self.terminal.add_log(f"音频已自动保存: {save_path}")
-        except Exception as e:
-            logger.error(f"自动保存音频失败: {str(e)}", exc_info=True)
-            self.terminal.add_log(f"自动保存失败: {str(e)}")
+
 
     def _cleanup_gpu_memory(self):
         """清理GPU显存"""

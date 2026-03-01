@@ -405,8 +405,6 @@ class ModelLoader:
             reserved = torch.cuda.memory_reserved() / 1024**2  # MB
             logger.info(f"✓ 清理后显存使用: 已分配 {allocated:.2f}MB, 已预留 {reserved:.2f}MB")
 
-            # 第二次垃圾回收（确保所有 Python 对象都被清理）
-            gc.collect()
 
         except Exception as e:
             logger.error(f"✗ CUDA 内存清理失败: {str(e)}")

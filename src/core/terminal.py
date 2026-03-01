@@ -27,6 +27,7 @@ from utils.logger import app_logger
 # ============ ANSI颜色解析 ============
 
 ANSI_ESCAPE_REGEX = re.compile(r'\x1b\[[0-9;]*m')
+EXCESSIVE_NEWLINE_REGEX = re.compile(r'(\r?\n){3,}')
 COLOR_MAP = {
     '\x1b[30m': ft.Colors.BLACK,
     '\x1b[31m': ft.Colors.RED,
@@ -462,7 +463,7 @@ class AsyncTerminal:
     def _clean_text(self, text: str) -> str:
         """清理和规范化日志文本"""
         # 清理多余换行
-        text = re.sub(r'(\r?\n){3,}', '\n\n', text.strip())
+        text = EXCESSIVE_NEWLINE_REGEX.sub('\n\n', text.strip())
 
         # 长度限制
         is_detailed = 'Traceback' in text or 'File "' in text

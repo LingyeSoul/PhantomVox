@@ -6,8 +6,6 @@
 
 import flet as ft
 import logging
-import numpy as np
-
 from ui.components.base import BaseVoiceView
 from ui.components.shared_controls import create_labeled_control
 
@@ -190,97 +188,27 @@ class VoiceDesignView(BaseVoiceView):
                 bgcolor=ft.Colors.RED
             ))
             return
-
-        total = len(texts)
-        self.terminal.add_log(f"开始批量生成 {total} 个文本（每批最多 {batch_size} 个）...")
+        
         self.terminal.add_log(f"声音描述: {design_prompt[:50]}...")
-
-        # 显示进度
-        self.batch_progress_text.visible = True
-        self.batch_progress_bar.visible = True
-        self.batch_progress_text.value = f"准备生成 {total} 个文本..."
-        self.batch_progress_bar.value = 0
-        self._page.update()
-
-        # 存储每个文本的音频块
-        item_chunks = [[] for _ in range(len(texts))]
-        sample_rate = 24000
-        num_batches = (total + batch_size - 1) // batch_size
-
-        try:
-            for batch_idx in range(num_batches):
-                batch_start = batch_idx * batch_size
-                batch_end = min(batch_start + batch_size, total)
-                batch_texts = texts[batch_start:batch_end]
-                batch_num = batch_idx + 1
-
-                self.terminal.add_log(f"处理第 {batch_num}/{num_batches} 批 (文本 {batch_start+1}-{batch_end})...")
-
-                item_started = [False] * len(batch_texts)
-                item_completed = [False] * len(batch_texts)
-
-                async for chunks_list, sr in tts_engine.voice_design_batch_stream_synthesize_async(
-                    texts=batch_texts,
-                    design_prompt=design_prompt,
-                    language="Chinese",
-                ):
-                    sample_rate = sr
-
-                    for i, chunk in enumerate(chunks_list):
-                        global_idx = batch_start + i
-                        if chunk.size > 0:
-                            item_chunks[global_idx].append(chunk)
-                            item_started[i] = True
-                        elif item_started[i] and not item_completed[i]:
-                            item_completed[i] = True
-
-                    batch_completed = sum(item_completed)
-                    global_completed = batch_start + batch_completed
-                    progress = global_completed / total
-
-                    self.batch_progress_text.value = f"批次 {batch_num}/{num_batches} - 已完成 {global_completed}/{total}"
-                    self.batch_progress_bar.value = progress
-                    self._page.update()
-
-                if batch_idx < num_batches - 1:
-                    self._cleanup_gpu_memory()
-                    self.terminal.add_log(f"批次 {batch_num}/{num_batches} 完成，已清理显存")
-
-            # 合并音频
-            self.terminal.add_log("正在合并音频...")
-            combined_audios = []
-            for i, chunks in enumerate(item_chunks):
-                if chunks:
-                    non_empty = [c for c in chunks if c.size > 0]
-                    if non_empty:
-                        combined = np.concatenate(non_empty)
-                        combined_audios.append(combined)
-                        self.terminal.add_log(f"  文本 {i+1}: {len(combined)/sample_rate:.2f}s")
-
-            if combined_audios:
-                final_audio = np.concatenate(combined_audios)
-                self._save_generated_audio(final_audio, sample_rate, "batch")
-
-                self.batch_progress_text.value = f"批量生成完成: {total} 个文本, 总时长 {len(final_audio)/sample_rate:.2f}s"
-                self.batch_progress_bar.value = 1.0
-                self.terminal.add_log(f"批量语音生成成功: {total} 个文本")
-
-                # 保存到设计历史
-                self.voice_library.save_design_history("批量设计", design_prompt)
-                self._refresh_history()
-
-                await self._on_play(None)
-            else:
-                self.batch_progress_text.value = "生成失败: 没有有效的音频"
-                self.terminal.add_log("批量生成失败: 没有生成任何音频")
-
-        except Exception as e:
-            logger.error(f"批量生成失败: {str(e)}", exc_info=True)
-            self.batch_progress_text.value = f"生成失败: {str(e)}"
-            raise
-        finally:
-            self._cleanup_gpu_memory()
-
+        
+        def stream_method():
+            return tts_engine.voice_design_batch_stream_synthesize_async(
+                texts=texts,
+                design_prompt=design_prompt,
+                language="Chinese",
+            )
+        
+        await self._execute_batch_generation(
+            texts=texts,
+            tts_engine=tts_engine,
+            batch_size=batch_size,
+            stream_method=stream_method,
+            prefix="batch"
+        )
+        
+        # 保存到设计历史
+        self.voice_library.save_design_history("批量设计", design_prompt)
+        self._refresh_history()
     # ==================== 特有方法：收藏和历史 ====================
 
     def _on_save_favorite(self, _):

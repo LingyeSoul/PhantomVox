@@ -117,23 +117,40 @@ class SRTBatchEngine:
             failed_indices = []
 
             total = len(entries)
-            for i, entry in enumerate(entries):
+            semaphore = asyncio.Semaphore(3)  # Limit concurrent tasks to avoid GPU memory overflow
+            completed_count = 0
+            results = [None] * total  # Pre-allocate results list
+
+            async def generate_with_semaphore(entry: SRTEntry, index: int):
+                async with semaphore:
+                    try:
+                        audio, sr = await self._generate_single(entry.text)
+                        duration = len(audio) / sr
+                        return (index, audio, sr, duration, None)
+                    except Exception as e:
+                        logger.error(f"字幕 {entry.index} 生成失败: {e}")
+                        return (index, None, 24000, 0.0, e)
+
+            tasks = [generate_with_semaphore(entry, i) for i, entry in enumerate(entries)]
+
+            # Use as_completed to update progress in real-time as tasks finish
+            for coro in asyncio.as_completed(tasks):
+                index, audio, sr, duration, error = await coro
+                results[index] = (audio, sr, duration, error)
+                
+                if error:
+                    failed_indices.append(index)
+                
+                # Real-time progress callback after each task completes
+                completed_count += 1
                 if progress_callback:
-                    progress_callback(i + 1, total, entry.text[:50])
+                    progress_callback(completed_count, total, entries[index].text[:50])
+                logger.info(f"完成字幕 {completed_count}/{total}: {entries[index].text[:30]}... ({duration:.2f}s)")
 
-                logger.info(f"生成字幕 {i + 1}/{total}: {entry.text[:30]}...")
-
-                try:
-                    audio, sr = await self._generate_single(entry.text)
-                    duration = len(audio) / sr
-                    generated_audios.append((audio, sr))
-                    audio_durations.append(duration)
-                    logger.info(f"  音频时长: {duration:.2f}s")
-                except Exception as e:
-                    logger.error(f"字幕 {entry.index} 生成失败: {e}")
-                    failed_indices.append(i)
-                    generated_audios.append((None, 24000))
-                    audio_durations.append(0.0)
+            # Process results in order
+            for index, (audio, sr, duration, error) in enumerate(results):
+                generated_audios.append((audio, sr))
+                audio_durations.append(duration)
 
             successful_count = total - len(failed_indices)
             if successful_count == 0:
