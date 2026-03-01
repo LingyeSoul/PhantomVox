@@ -417,10 +417,10 @@ class BaseVoiceView(ft.Container):
 
         if self._temp_audio_file:
             self._audio_temp_manager.cleanup_file(self._temp_audio_file)
-
-        self._temp_audio_file = self._audio_temp_manager.save_audio(audio, sample_rate, prefix=prefix or "audio")
-        self._last_audio = (audio, sample_rate)
         self.audio_control.update_audio_state(True)
+        # 显示音频时长
+        duration = len(audio) / sample_rate if sample_rate > 0 else 0.0
+        self.audio_control.set_duration(duration)
 
         auto_save = self.config_manager.get("audio.auto_save", False)
         if auto_save:
@@ -439,10 +439,12 @@ class BaseVoiceView(ft.Container):
 
             async def progress_callback(p, c, t):
                 self.audio_control.update_progress(p, c, t)
-            audio_manager.set_progress_callback(progress_callback)
-
             async def completion_callback():
-                self.audio_control.reset_progress()
+                # 播放完成后显示总时长
+                if self._last_audio:
+                    audio_data, sr = self._last_audio
+                    duration = len(audio_data) / sr if sr > 0 else 0.0
+                    self.audio_control.set_duration(duration)
             audio_manager.set_completion_callback(completion_callback)
 
             if self._last_audio:
