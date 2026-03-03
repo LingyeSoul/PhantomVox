@@ -15,7 +15,7 @@ import gc
 import numpy as np
 import torch
 from abc import abstractmethod
-from typing import Optional, Tuple, List, Callable, Any
+from typing import Optional, Tuple, List, Callable
 
 from ui.components.base.text_panel import TextPanel
 from ui.components.base.audio_control_panel import AudioControlPanel

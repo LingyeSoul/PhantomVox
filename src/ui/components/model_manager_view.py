@@ -179,15 +179,12 @@ class ModelManagerView(ft.Container):
                 # 状态标签和必装标识
                 if is_usable:
                     status_text = "可用"
-                    status_color = ft.Colors.GREEN
                     status_bg = ft.Colors.with_opacity(0.1, ft.Colors.GREEN)
                 elif is_installed:
                     status_text = "不可用"
-                    status_color = ft.Colors.ORANGE
                     status_bg = ft.Colors.with_opacity(0.1, ft.Colors.ORANGE)
                 else:
                     status_text = "未安装"
-                    status_color = ft.Colors.GREY
                     status_bg = ft.Colors.with_opacity(0.1, ft.Colors.GREY)
 
                 # 必装标识
@@ -364,7 +361,7 @@ class ModelManagerView(ft.Container):
                         self._page.show_dialog(ft.SnackBar(ft.Text(f"✓ {model_info.name} 下载完成")))
 
                     async def update_ui_on_failure():
-                        self._terminal.add_log(f"✗ 下载失败")
+                        self._terminal.add_log("✗ 下载失败")
                         self._page.pop_dialog()
                         self._page.show_dialog(ft.SnackBar(ft.Text("✗ 下载失败")))
 
@@ -376,12 +373,13 @@ class ModelManagerView(ft.Container):
                 except Exception as ex:
                     self._terminal.add_log(f"✗ 下载失败: {str(ex)}")
                     logger.exception("模型下载异常")
+                    error_message = str(ex)
                     try:
                         self._page.pop_dialog()
-                        async def show_error_dialog():
-                            self._page.show_dialog(ft.SnackBar(ft.Text(f"✗ 下载失败: {str(ex)}")))
+                        async def show_error_dialog(msg=error_message):
+                            self._page.show_dialog(ft.SnackBar(ft.Text(f"✗ 下载失败: {msg}")))
                         self._page.run_task(show_error_dialog)
-                    except:
+                    except Exception:
                         pass
 
             loop.run_until_complete(download())
@@ -414,7 +412,7 @@ class ModelManagerView(ft.Container):
             # 刷新显示
             self.download_progress_container.update()
 
-        except Exception as e:
+        except Exception:
             logger.exception("更新下载进度UI失败")
 
     def _on_delete_model_click(self, e, model_id: str):
@@ -452,7 +450,7 @@ class ModelManagerView(ft.Container):
                         # 刷新整个视图以确保UI更新
                         self.model_list.update()
                     else:
-                        self._terminal.add_log(f"✗ 删除失败")
+                        self._terminal.add_log("✗ 删除失败")
                 finally:
                     self._page.pop_dialog()
 

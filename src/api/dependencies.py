@@ -4,7 +4,7 @@ FastAPI 依赖注入配置
 使用 FastAPI 的依赖注入系统管理共享资源
 """
 
-from fastapi import Depends, HTTPException, status
+from fastapi import HTTPException, status
 from typing import Callable, Optional, Dict, Any
 import logging
 

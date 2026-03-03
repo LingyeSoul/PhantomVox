@@ -11,8 +11,6 @@
 
 import flet as ft
 import logging
-import os
-import re
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
@@ -140,7 +138,7 @@ class SettingsView(ft.Container):
                 logger.info(f"检测到 {cuda_device_count} 个 CUDA 设备")
 
                 # 添加通用 CUDA 选项
-                options.append(ft.dropdown.Option("cuda", f"CUDA (通用)"))
+                options.append(ft.dropdown.Option("cuda", "CUDA (通用)"))
 
                 # 添加每个具体的 CUDA 设备
                 for i in range(cuda_device_count):
@@ -181,7 +179,7 @@ class SettingsView(ft.Container):
                 logger.info(f"配置的设备不可用，使用自动检测: {device_value}")
             else:
                 device_value = "cpu"
-                logger.info(f"使用 CPU")
+                logger.info("使用 CPU")
 
         return device_value
 

@@ -111,7 +111,7 @@ class ConfigManager:
         try:
             with open(self.config_path, "r") as f:
                 return json.load(f)
-        except Exception as e:
+        except Exception:
             # 如果读取失败，返回默认配置
             return self.default_config
     

@@ -6,12 +6,10 @@ TTS 合成路由
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from scipy.io import wavfile
-import numpy as np
 import base64
 import io
 import logging
 import asyncio
-from typing import Optional
 
 from api.models import TTSRequest, TTSResponse
 from api.dependencies import get_tts_engine, get_voice_library, log_message

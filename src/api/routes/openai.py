@@ -4,17 +4,16 @@ OpenAI 兼容路由
 提供与 OpenAI TTS API 兼容的接口
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Header, status
+from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.responses import StreamingResponse
 from scipy.io import wavfile
 import numpy as np
 import io
 import logging
-from typing import Optional
 
 from api.models import OpenAITTSRequest
 from api.dependencies import get_tts_engine, log_message
-from api.constants import VOICE_MAPPING, ALLOWED_SPEAKERS, DEFAULT_SPEAKER
+from api.constants import VOICE_MAPPING
 from api.security import verify_api_key
 
 router = APIRouter(prefix="/v1")

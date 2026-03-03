@@ -4,18 +4,21 @@ PhantomVox - 基于 Qwen3-TTS 的文本转语音应用
 主程序入口
 """
 
-import flet as ft
 import logging
 import sys
 import os
 
 # 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _root_dir)
 src_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, src_dir)
-from ui.main_ui import PhantomUI
-from utils.logger import app_logger
-from version import VERSION
+
+import flet as ft  # noqa: E402
+
+from ui.main_ui import PhantomUI  # noqa: E402
+from utils.logger import app_logger  # noqa: E402
+from version import VERSION  # noqa: E402
 
 
 async def main(page: ft.Page):

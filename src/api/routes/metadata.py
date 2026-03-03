@@ -4,7 +4,7 @@
 获取说话人列表、语言列表、克隆音色列表等元数据
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends
 from api.models import SpeakersResponse, LanguagesResponse, ClonesResponse, DesignPresetsResponse
 from api.dependencies import get_voice_library
 

@@ -2,7 +2,7 @@
 状态查询路由
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from api.models import StatusResponse
 from core.task_engine import get_task_engine
 

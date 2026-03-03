@@ -217,7 +217,7 @@ class VoiceCloneView(BaseVoiceView):
 
         try:
             self._page.update()
-        except:
+        except Exception:
             pass
 
         # 生成语音

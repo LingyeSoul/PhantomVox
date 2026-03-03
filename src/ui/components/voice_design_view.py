@@ -7,7 +7,6 @@
 import flet as ft
 import logging
 from ui.components.base import BaseVoiceView
-from ui.components.shared_controls import create_labeled_control
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +158,7 @@ class VoiceDesignView(BaseVoiceView):
 
         try:
             self._page.update()
-        except:
+        except Exception:
             pass
 
         # 生成语音

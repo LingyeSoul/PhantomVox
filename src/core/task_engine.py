@@ -469,7 +469,7 @@ class TaskEngine:
             unload_func=unload_func,
             args=unload_args,
             kwargs=unload_kwargs,
-            description=f"切换模型 - 卸载旧模型",
+            description="切换模型 - 卸载旧模型",
         )
 
         # 步骤2: 加载新模型

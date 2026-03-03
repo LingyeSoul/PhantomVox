@@ -10,7 +10,7 @@ import logging
 import struct
 import asyncio
 import numpy as np
-from typing import Optional, AsyncGenerator, Tuple
+from typing import AsyncGenerator, Tuple
 
 from api.models import TTSRequest, OpenAITTSRequest
 from api.dependencies import (
@@ -27,7 +27,6 @@ from api.utils.clone_lookup import find_clone
 from api.constants import (
     VOICE_MAPPING,
     ALLOWED_SPEAKERS,
-    DEFAULT_SPEAKER,
     STREAMING_TIMEOUT,
     SAMPLE_RATE,
 )

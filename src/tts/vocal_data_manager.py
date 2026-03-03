@@ -264,7 +264,7 @@ class VocalDataManager:
         except Exception as e:
             logger.error(f"音频转换失败（未预期的错误）: {e}")
             # 记录详细错误到日志，返回通用错误给用户
-            raise RuntimeError(f"音频转换失败，请检查文件格式是否正确")
+            raise RuntimeError("音频转换失败，请检查文件格式是否正确")
 
     def _convert_to_wav_legacy(self, source_path: str, target_path: Path):
         """
@@ -326,12 +326,11 @@ class VocalDataManager:
             logger.debug("pydub 未安装，尝试其他方法")
         except Exception as e:
             logger.warning(f"pydub 转换失败: {e}，尝试其他方法")
-            # 清理临时文件
             temp_path = str(target_path) + '.tmp'
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
-                except:
+                except OSError:
                     pass
 
         # 方法2：使用 librosa（备选）

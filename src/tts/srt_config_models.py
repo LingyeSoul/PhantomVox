@@ -4,8 +4,8 @@ SRT批量推理配置模型
 定义三种TTS模式的配置数据结构
 """
 
-from dataclasses import dataclass, field
-from typing import Optional, List, Any
+from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass

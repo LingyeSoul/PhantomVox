@@ -9,12 +9,10 @@ Qwen3-TTS 引擎封装（重构版）
 所有三种模式都支持流式输出（基于修改版qwen-tts的 stream_generate_pcm API）
 """
 
-from qwen_tts import Qwen3TTSModel
-from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
 import logging
 import numpy as np
 import asyncio
-from typing import Tuple, Optional, AsyncGenerator, Dict, Any, Generator, List
+from typing import Tuple, Optional, AsyncGenerator, Generator, List
 import torch
 
 from .exceptions import (
@@ -24,7 +22,7 @@ from .exceptions import (
 )
 
 # 导入新模块
-from .audio_loader import apply_librosa_patch, get_original_librosa_load
+from .audio_loader import apply_librosa_patch
 from .model_loader import ModelLoader
 from .prompt_manager import PromptManager
 
@@ -997,7 +995,7 @@ class QwenEngine:
             # 检查是否有事件循环
             try:
                 import asyncio
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 # 在同步上下文中调用异步方法
                 asyncio.create_task(self.model_loader.unload_async())
                 logger.info("已启动智能显存卸载任务")

@@ -5,7 +5,6 @@
 """
 
 import flet as ft
-from typing import Optional
 
 
 class AboutView(ft.Container):

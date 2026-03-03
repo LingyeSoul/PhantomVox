@@ -248,7 +248,6 @@ class AudioManager:
             target_frame = max(0, min(target_frame, self._total_frames - 1))
 
             # 保存当前状态
-            was_playing = self._is_playing and not self._is_paused
             was_paused = self._is_paused
 
             if self._is_playing:
@@ -488,7 +487,7 @@ class AudioManager:
 
         # 检查是否是列表
         if isinstance(audio_data, list):
-            logger.warning(f"接收到列表，自动转换为 numpy array")
+            logger.warning("接收到列表，自动转换为 numpy array")
             audio_data = np.array(audio_data)
 
         # 确保是 numpy 数组

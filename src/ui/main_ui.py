@@ -8,8 +8,7 @@ PhantomVox 主 UI 控制器
 import flet as ft
 import logging
 import asyncio
-from typing import Optional, AsyncGenerator, Tuple
-import numpy as np
+from typing import Optional
 
 from ui.components.app_bar import PhantomAppBar
 from ui.components.custom_voice_view import CustomVoiceView
@@ -1064,7 +1063,7 @@ class PhantomUI:
             logger.exception("关闭应用时出错")
             try:
                 await self.page.window.destroy()
-            except:
+            except Exception:
                 pass
 
     def _on_close_window(self, e):
@@ -1075,14 +1074,12 @@ class PhantomUI:
         async def confirm_close_async():
             """确认关闭后的异步操作"""
             try:
-                # 关闭对话框
                 try:
                     self.page.pop_dialog()
                 except RuntimeError:
                     pass
-            except:
+            except Exception:
                 pass
-            # 执行清理和关闭
             await self._do_cleanup_and_close()
 
         def on_confirm(_):
@@ -1093,7 +1090,7 @@ class PhantomUI:
             """用户取消关闭"""
             try:
                 self.page.pop_dialog()
-            except:
+            except Exception:
                 pass
 
         # 显示确认对话框

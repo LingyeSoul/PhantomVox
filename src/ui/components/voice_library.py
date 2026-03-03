@@ -270,7 +270,7 @@ class VoiceLibrary:
                 self.vocal_manager.save_design_presets(legacy_presets)
                 # 迁移完成后，清空 config.json 中的旧数据
                 self.config_manager.set("voice_design.design_presets", {})
-                logger.info(f"✓ 已清空 config.json 中的旧设计预设数据")
+                logger.info("✓ 已清空 config.json 中的旧设计预设数据")
                 user_presets = legacy_presets
 
         # 合并内置预设和用户自定义预设
@@ -480,7 +480,7 @@ class VoiceLibrary:
         # 迁移完成后，清空 config.json 中的旧数据
         if migrated_count > 0:
             self.config_manager.set("voice_clone.clone_library", [])
-            logger.info(f"✓ 已清空 config.json 中的旧克隆数据")
+            logger.info("✓ 已清空 config.json 中的旧克隆数据")
 
         logger.info(f"克隆数据迁移完成: 成功 {migrated_count} 个, 失败 {failed_count} 个")
 

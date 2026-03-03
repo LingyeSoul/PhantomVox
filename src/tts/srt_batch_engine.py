@@ -6,11 +6,9 @@ SRT批量推理引擎
 
 import asyncio
 import logging
-from typing import List, Optional, Callable, Any, Union
+from typing import Optional, Callable
 from dataclasses import dataclass
-from pathlib import Path
 
-import numpy as np
 
 from .srt_parser import SRTParser, SRTEntry, ScheduledEntry
 from .srt_config_models import (

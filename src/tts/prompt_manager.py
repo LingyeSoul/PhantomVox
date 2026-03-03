@@ -5,7 +5,7 @@ Prompt 管理模块
 """
 
 import logging
-from typing import List, Optional, Any
+from typing import List, Any
 
 from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
 

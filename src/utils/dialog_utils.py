@@ -9,7 +9,6 @@ import logging
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
-from typing import Callable, Optional
 
 
 async def show_confirm_dialog(

@@ -351,12 +351,11 @@ def convert_to_wav(
             "pydub 未安装。请安装: pip install pydub"
         )
     except Exception as e:
-        # 清理临时文件
         temp_path = target_path + '.tmp'
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
-            except:
+            except OSError:
                 pass
 
         raise RuntimeError(f"音频转换失败: {e}")

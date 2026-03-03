@@ -96,13 +96,13 @@ class UiEvent:
                 self.config_manager = None
 
             app_logger.info("UIEvent resources cleaned up")
-        except Exception as e:
+        except Exception:
             app_logger.exception("UIEvent cleanup error")
 
     def __del__(self):
         """析构函数 - 确保资源释放"""
         try:
             self.cleanup()
-        except Exception as e:
+        except Exception:
             # __del__ 中避免使用 logger，防止模块已卸载导致错误
             pass

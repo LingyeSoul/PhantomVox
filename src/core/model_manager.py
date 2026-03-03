@@ -5,13 +5,10 @@ PhantomVox 模型管理器
 使用 ModelScope 进行模型下载
 """
 
-import os
 import asyncio
-import subprocess
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Callable, List
-import json
 import shutil
 
 logger = logging.getLogger(__name__)
@@ -227,7 +224,7 @@ class ModelManager:
                 if model_id != "tokenizer-12hz":
                     # 使用 ignore_patterns 排除 speech_tokenizer 目录及其所有内容
                     download_kwargs["ignore_patterns"] = ["speech_tokenizer/**"]
-                    logger.info(f"跳过 speech_tokenizer 目录（将使用共享分词器 tokenizer-12hz）")
+                    logger.info("跳过 speech_tokenizer 目录（将使用共享分词器 tokenizer-12hz）")
 
                 return snapshot_download(
                     model_info.repo_id,

@@ -175,7 +175,7 @@ class ModelLoader:
                     logger.info(f"[DEBUG] 自动计算的 tokenizer_dir: {tokenizer_dir}")
                 else:
                     logger.info(
-                        f"[DEBUG] model_path 是 HuggingFace Hub ID，跳过本地 tokenizer 查找"
+                        "[DEBUG] model_path 是 HuggingFace Hub ID，跳过本地 tokenizer 查找"
                     )
                     tokenizer_dir = None
 
@@ -294,7 +294,7 @@ class ModelLoader:
                         logger.warning(f"将模型移至 CPU 失败: {e}")
                 self._cleanup_cuda_memory()
                 self._cleanup_timer = asyncio.create_task(self._delayed_cleanup())
-                logger.info(f"✓ 显存已释放，定时清理任务已启动")
+                logger.info("✓ 显存已释放，定时清理任务已启动")
             else:
                 self._force_cleanup()
                 logger.info("✓ 模型已直接清除（非智能模式）")

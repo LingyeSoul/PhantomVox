@@ -10,7 +10,7 @@ import os
 from typing import Optional, Callable
 from pathlib import Path
 
-from tts.srt_batch_engine import SRTBatchEngine, SRTBatchResult
+from tts.srt_batch_engine import SRTBatchEngine
 from tts.srt_config_models import (
     CustomVoiceConfig,
     VoiceDesignConfig,
@@ -658,7 +658,7 @@ class SRTBatchView(ft.Container):
             self.progress_text.value = "正在卸载旧模型..."
             try:
                 self._page.update()
-            except:
+            except Exception:
                 pass
 
             engine = self.tts_engine_getter()
@@ -688,7 +688,7 @@ class SRTBatchView(ft.Container):
             self.progress_text.value = "正在加载新模型..."
             try:
                 self._page.update()
-            except:
+            except Exception:
                 pass
 
             if self.on_load_model:
@@ -706,7 +706,7 @@ class SRTBatchView(ft.Container):
             self.progress_text.value = "正在加载模型..."
             try:
                 self._page.update()
-            except:
+            except Exception:
                 pass
 
             if self.on_load_model:
@@ -741,7 +741,7 @@ class SRTBatchView(ft.Container):
 
         try:
             self._page.update()
-        except:
+        except Exception:
             pass
 
         try:
@@ -752,14 +752,14 @@ class SRTBatchView(ft.Container):
                 self.progress_text.value = "模型加载失败"
                 try:
                     self._page.update()
-                except:
+                except Exception:
                     pass
                 return
 
             self.progress_text.value = "初始化引擎..."
             try:
                 self._page.update()
-            except:
+            except Exception:
                 pass
 
             tts_engine = await self.tts_engine_getter()
@@ -778,17 +778,16 @@ class SRTBatchView(ft.Container):
             self.progress_text.value = "开始批量推理..."
             try:
                 self._page.update()
-            except:
+            except Exception:
                 pass
 
-            # 进度回调
             def progress_callback(current: int, total: int, text: str):
                 self.progress_text.value = (
                     f"生成中... {current}/{total}: {text[:30]}..."
                 )
                 try:
                     self._page.update()
-                except:
+                except Exception:
                     pass
 
             # 执行批量推理
@@ -869,12 +868,12 @@ class SRTBatchView(ft.Container):
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            except:
+            except Exception:
                 pass
 
             try:
                 self._page.update()
-            except:
+            except Exception:
                 pass
 
     def _get_config_for_mode(self):
@@ -936,7 +935,7 @@ class SRTBatchView(ft.Container):
         """显示提示消息"""
         try:
             self._page.show_dialog(ft.SnackBar(ft.Text(message), bgcolor=color))
-        except:
+        except Exception:
             pass
 
     # ==================== 模型下拉框刷新 ====================
@@ -1100,5 +1099,5 @@ class SRTBatchView(ft.Container):
             self.model_dropdown.update()
             self.design_model_dropdown.update()
             self.clone_model_dropdown.update()
-        except:
+        except Exception:
             pass
