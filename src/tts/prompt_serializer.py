@@ -9,15 +9,11 @@ Prompt 特征序列化工具
 - 仅支持加载 tensors 和基本类型（str, int, float, bool, None）
 """
 
-import torch
 import logging
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any, List, Union
-
-from safetensors.torch import save_file
-from safetensors import safe_open
 
 # 导入 VoiceClonePromptItem 数据类
 try:
@@ -25,10 +21,11 @@ try:
 except ImportError:
     # 如果导入失败，定义一个简单的 dataclass（向后兼容）
     from dataclasses import dataclass
+
     @dataclass
     class VoiceClonePromptItem:
-        ref_code: Optional[torch.Tensor]
-        ref_spk_embedding: torch.Tensor
+        ref_code: Any
+        ref_spk_embedding: Any
         x_vector_only_mode: bool
         icl_mode: bool
         ref_text: Optional[str] = None
@@ -55,6 +52,9 @@ def save_prompt_features(
     Returns:
         bool: 是否成功
     """
+    import torch
+    from safetensors.torch import save_file
+
     try:
         # 如果是列表，取第一个元素
         if isinstance(prompt_item, list):
@@ -128,6 +128,8 @@ def load_prompt_features(
     Returns:
         VoiceClonePromptItem 对象，或 None
     """
+    from safetensors import safe_open
+
     try:
         # 自动检测文件格式
         if file_path.endswith('.safetensors'):
@@ -242,6 +244,8 @@ def _migrate_pt_to_safetensors(pt_path: str, safe_path: str) -> bool:
     Returns:
         bool: 是否成功
     """
+    import torch
+
     try:
         # 加载旧文件（使用 weights_only=True 安全加载）
         data = torch.load(pt_path, weights_only=True)
@@ -293,6 +297,8 @@ def validate_prompt_features(prompt_item: dict) -> bool:
     Returns:
         bool: 是否有效
     """
+    import torch
+
     try:
         # 检查必需字段
         if prompt_item.get("ref_spk_embedding") is None:
