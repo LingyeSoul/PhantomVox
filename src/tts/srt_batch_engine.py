@@ -6,9 +6,9 @@ SRT批量推理引擎
 
 import asyncio
 import logging
+import torch  # ⭐ 导入torch用于显存监控
 from typing import Optional, Callable
 from dataclasses import dataclass
-
 
 from .srt_parser import SRTParser, SRTEntry, ScheduledEntry
 from .srt_config_models import (
@@ -22,6 +22,10 @@ from .audio_assembler import AudioAssembler
 from .qwen_engine import QwenEngine
 
 logger = logging.getLogger(__name__)
+
+# 常量定义
+GENERATION_TIMEOUT_SECONDS = 300.0  # 5分钟超时
+GPU_CLEANUP_INTERVAL = 10  # 每10条清理一次显存
 
 
 @dataclass
@@ -115,35 +119,71 @@ class SRTBatchEngine:
             failed_indices = []
 
             total = len(entries)
-            semaphore = asyncio.Semaphore(3)  # Limit concurrent tasks to avoid GPU memory overflow
+            semaphore = asyncio.Semaphore(
+                3
+            )  # Limit concurrent tasks to avoid GPU memory overflow
             completed_count = 0
             results = [None] * total  # Pre-allocate results list
 
             async def generate_with_semaphore(entry: SRTEntry, index: int):
                 async with semaphore:
                     try:
-                        audio, sr = await self._generate_single(entry.text)
+                        # ⭐ 添加5分钟超时保护，防止永久卡住
+                        audio, sr = await asyncio.wait_for(
+                            self._generate_single(entry.text),
+                            timeout=GENERATION_TIMEOUT_SECONDS,  # 5分钟
+                        )
                         duration = len(audio) / sr
                         return (index, audio, sr, duration, None)
+                    except asyncio.TimeoutError as e:
+                        logger.error(
+                            f"⚠️ 字幕 {entry.index} 生成超时（5分钟），跳过此条"
+                        )
+                        return (
+                            index,
+                            None,
+                            24000,
+                            0.0,
+                            e,
+                        )
                     except Exception as e:
-                        logger.error(f"字幕 {entry.index} 生成失败: {e}")
+                        logger.error(f"✗ 字幕 {entry.index} 生成失败: {e}")
                         return (index, None, 24000, 0.0, e)
 
-            tasks = [generate_with_semaphore(entry, i) for i, entry in enumerate(entries)]
+            tasks = [
+                generate_with_semaphore(entry, i) for i, entry in enumerate(entries)
+            ]
 
             # Use as_completed to update progress in real-time as tasks finish
             for coro in asyncio.as_completed(tasks):
                 index, audio, sr, duration, error = await coro
                 results[index] = (audio, sr, duration, error)
-                
+
                 if error:
                     failed_indices.append(index)
-                
+
                 # Real-time progress callback after each task completes
                 completed_count += 1
                 if progress_callback:
                     progress_callback(completed_count, total, entries[index].text[:50])
-                logger.info(f"完成字幕 {completed_count}/{total}: {entries[index].text[:30]}... ({duration:.2f}s)")
+                logger.info(
+                    f"完成字幕 {completed_count}/{total}: {entries[index].text[:30]}... ({duration:.2f}s)"
+                )
+
+                # ⭐ 每处理10条清理一次显存，防止累积
+                if completed_count % GPU_CLEANUP_INTERVAL == 0:
+                    try:
+                        import gc
+
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            gpu_mem = torch.cuda.memory_allocated() / 1024**3
+                            logger.info(
+                                f"🧹 已清理GPU缓存，当前显存: {gpu_mem:.2f}GB (处理了 {completed_count} 条)"
+                            )
+                    except Exception as cleanup_err:
+                        logger.warning(f"清理显存时出错: {cleanup_err}")
 
             # Process results in order
             for index, (audio, sr, duration, error) in enumerate(results):

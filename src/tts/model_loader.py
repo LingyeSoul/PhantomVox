@@ -270,10 +270,19 @@ class ModelLoader:
             logger.info(f"正在切换优化模式: {self._current_optimization_mode} → {mode}")
 
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._apply_optimizations, mode)
-
-            self._current_optimization_mode = mode
-            logger.info(f"✓ 优化模式已切换至: {mode}")
+            try:
+                # ⭐ 添加30秒超时保护，防止优化模式切换卡住
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, self._apply_optimizations, mode),
+                    timeout=30.0
+                )
+                self._current_optimization_mode = mode
+                logger.info(f"✓ 优化模式已切换至: {mode}")
+            except asyncio.TimeoutError:
+                logger.error(f"⚠️ 优化模式切换超时，尝试清理显存")
+                self._cleanup_cuda_memory()
+                self._current_optimization_mode = None  # 重置状态，强制下次重新初始化
+                raise RuntimeError("优化模式切换超时，可能GPU资源不足")
 
     async def unload_async(self):
         """卸载模型并释放资源（异步方法，支持智能显存管理）"""
