@@ -128,8 +128,6 @@ def load_prompt_features(
     Returns:
         VoiceClonePromptItem 对象，或 None
     """
-    from safetensors import safe_open
-
     try:
         # 自动检测文件格式
         if file_path.endswith('.safetensors'):
@@ -182,6 +180,8 @@ def _load_from_safetensors(
     Returns:
         VoiceClonePromptItem 对象，或 None
     """
+    from safetensors import safe_open
+
     try:
         with safe_open(file_path, framework="pt", device="cpu") as f:
             # 读取 metadata

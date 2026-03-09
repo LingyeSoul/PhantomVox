@@ -50,11 +50,11 @@ class SafeTTSEngineProxy(BaseEngineProxy):
             task_engine: 任务引擎实例
             terminal: 终端日志实例
         """
-        # 保存引擎引用，用于同步方法
-        self._engine = engine
+        # 保存终端引用
         self._terminal = terminal
 
         # 调用父类初始化，传入引擎getter函数
+        # 注意：不要设置 self._engine，因为父类的 _get_engine() 会递归解包 _engine 属性
         super().__init__(engine_getter=lambda: engine, task_engine=task_engine)
 
     def _log(self, message: str):

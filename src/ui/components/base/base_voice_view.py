@@ -417,6 +417,11 @@ class BaseVoiceView(ft.Container):
 
         if self._temp_audio_file:
             self._audio_temp_manager.cleanup_file(self._temp_audio_file)
+
+        # 保存音频数据
+        self._last_audio = (audio, sample_rate)
+        self._temp_audio_file = self._audio_temp_manager.save_audio(audio, sample_rate, prefix=prefix)
+
         self.audio_control.update_audio_state(True)
         # 显示音频时长
         duration = len(audio) / sample_rate if sample_rate > 0 else 0.0
@@ -425,7 +430,6 @@ class BaseVoiceView(ft.Container):
         auto_save = self.config_manager.get("audio.auto_save", False)
         if auto_save:
             self._auto_save_audio()
-
     # ==================== 音频控制 ====================
 
     async def _on_play(self, e):
