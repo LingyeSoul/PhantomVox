@@ -166,6 +166,9 @@ class PhantomUI:
         # 创建 UI 组件
         self._create_ui_components()
 
+        # 创建共享的页面 FAB（绕过 Flet 0.84 替换 FAB 时的 patch bug）
+        self._page_fab = ft.FloatingActionButton(visible=False)
+
         logger.info("PhantomVox UI 初始化完成")
 
     def _create_qwen_engine_lazy(
@@ -235,8 +238,12 @@ class PhantomUI:
             )
             # 获取智能显存管理配置
             smart_vram_enabled = self.config_manager.get("model.smart_vram", True)
-            delay_cleanup_seconds = self.config_manager.get("model.delay_cleanup_seconds", 60)
-            logger.info(f"智能显存管理: {smart_vram_enabled}, 延迟清理: {delay_cleanup_seconds}秒")
+            delay_cleanup_seconds = self.config_manager.get(
+                "model.delay_cleanup_seconds", 60
+            )
+            logger.info(
+                f"智能显存管理: {smart_vram_enabled}, 延迟清理: {delay_cleanup_seconds}秒"
+            )
 
             model_info = self.model_manager.get_model_info(model_id)
             self.terminal.add_log(
@@ -490,32 +497,47 @@ class PhantomUI:
         self.navigation_rail = rail
         return rail
 
+    def _update_page_fab(self):
+        """根据当前视图更新页面 FAB（使用共享实例绕过 Flet patch bug）"""
+        voice_pages = {0, 1, 2, 3}
+        if self._current_view_index not in voice_pages:
+            self._page_fab.visible = False
+        else:
+            view = None
+            if self._current_view_index == 0:
+                view = self.custom_voice_view
+            elif self._current_view_index == 1:
+                view = self.voice_design_view
+            elif self._current_view_index == 2:
+                view = self.voice_clone_view
+            elif self._current_view_index == 3:
+                view = self.srt_batch_view
+
+            if view and hasattr(view, "_fab"):
+                src = view._fab
+                self._page_fab.icon = src.icon
+                self._page_fab.bgcolor = src.bgcolor
+                self._page_fab.tooltip = src.tooltip
+                self._page_fab.on_click = src.on_click
+                self._page_fab.visible = getattr(src, "visible", True)
+            else:
+                self._page_fab.visible = False
+
+        try:
+            if self._page_fab.page:
+                self._page_fab.update()
+        except RuntimeError:
+            pass
+
     def on_navigation_change(self, e):
         """导航切换事件"""
         old_index = self._current_view_index
         self._current_view_index = e.control.selected_index
 
-        # PDCA 循环 #1 修复: 集中管理 FloatingActionButton
-        # 根据当前视图索引设置对应的 FAB，解决视图切换时 FAB 不匹配的问题
-        voice_pages = {0, 1, 2, 3}  # Custom Voice, Voice Design, Voice Clone, SRT Batch
-        if self._current_view_index not in voice_pages:
-            # 非语音页面，隐藏 FAB
-            self.page.floating_action_button = None
-        else:
-            # 语音页面，设置对应视图的 FAB
-            if self._current_view_index == 0:
-                fab = self.custom_voice_view._fab if self.custom_voice_view else None
-            elif self._current_view_index == 1:
-                fab = self.voice_design_view._fab if self.voice_design_view else None
-            elif self._current_view_index == 2:
-                fab = self.voice_clone_view._fab if self.voice_clone_view else None
-            elif self._current_view_index == 3:
-                fab = self.srt_batch_view._fab if self.srt_batch_view else None
-            else:
-                fab = None
-            self.page.floating_action_button = fab
+        self._update_page_fab()
 
         # 如果切换到不同的语音相关页面，清空当前模型ID以重新加载
+        voice_pages = {0, 1, 2, 3}
         if old_index in voice_pages and self._current_view_index in voice_pages:
             # 清空模型ID，强制重新加载合适的模型
             self._current_model_id = None
@@ -568,21 +590,7 @@ class PhantomUI:
 
         self.content_area.update()
 
-        # PDCA 循环 #1 修复: 更新 FAB（视图可能刚刚初始化）
-        # 确保在视图创建后设置正确的 FAB
-        voice_pages = {0, 1, 2, 3}
-        if self._current_view_index in voice_pages:
-            if self._current_view_index == 0:
-                fab = self.custom_voice_view._fab if self.custom_voice_view else None
-            elif self._current_view_index == 1:
-                fab = self.voice_design_view._fab if self.voice_design_view else None
-            elif self._current_view_index == 2:
-                fab = self.voice_clone_view._fab if self.voice_clone_view else None
-            elif self._current_view_index == 3:
-                fab = self.srt_batch_view._fab if self.srt_batch_view else None
-            else:
-                fab = None
-            self.page.floating_action_button = fab
+        self._update_page_fab()
 
         # 在页面更新后刷新模型下拉框（需要在控件添加到页面后）
         if self._current_view_index == 0:
@@ -901,9 +909,8 @@ class PhantomUI:
         initial_view = self._get_custom_voice_view()
         self.content_area = ft.Column([initial_view], expand=True)
 
-        # 设置初始 FAB（修复程序启动时 FAB 不显示的 bug）
-        if self.custom_voice_view and hasattr(self.custom_voice_view, "_fab"):
-            self.page.floating_action_button = self.custom_voice_view._fab
+        self.page.floating_action_button = self._page_fab
+        self._update_page_fab()
 
         # 创建终端日志组件（用于 ExpansionTile 的 controls）
         self._terminal_logs_content = ft.Container(
