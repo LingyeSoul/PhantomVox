@@ -1,7 +1,7 @@
 # PhantomVox dependencies
 
 # UI framework
-flet==0.80.5
+flet==0.84.0
 
 # TTS engine
 # qwen-tts>=0.0.5  # Using local build instead (qwen_tts-0.0.6-py3-none-any.whl)
