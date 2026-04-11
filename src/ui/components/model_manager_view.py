@@ -344,7 +344,7 @@ class ModelManagerView(ft.Container):
                     # 使用带依赖的下载方法
                     success = await self._model_manager.download_model_with_dependencies(
                         model_id,
-                        progress_callback=None  # 不需要更新UI
+                        progress_callback=self._on_download_progress  # 启用进度回调
                     )
 
                     # 使用 run_task 在主线程中执行 UI 操作
