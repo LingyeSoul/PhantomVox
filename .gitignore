@@ -33,3 +33,4 @@ update.py
 /tests
 pytest.ini
 /.trae
+/.sisyphus

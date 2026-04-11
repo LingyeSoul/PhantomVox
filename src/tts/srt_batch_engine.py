@@ -19,7 +19,7 @@ from .srt_config_models import (
 )
 from .timeline_scheduler import TimelineScheduler
 from .audio_assembler import AudioAssembler
-from .qwen_engine import QwenEngine
+from .base_engine import BaseTTSEngine
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class SRTBatchEngine:
     MODE_VOICE_DESIGN = "voice_design"
     MODE_VOICE_CLONE = "voice_clone"
 
-    def __init__(self, tts_engine: QwenEngine):
+    def __init__(self, tts_engine: BaseTTSEngine):
         self.tts_engine = tts_engine
         self.parser = SRTParser()
         self.scheduler = TimelineScheduler()

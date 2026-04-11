@@ -21,6 +21,9 @@ from .srt_batch_engine import SRTBatchEngine, SRTBatchResult
 from .srt_config_models import CustomVoiceConfig, VoiceDesignConfig, VoiceCloneConfig
 from .timeline_scheduler import TimelineScheduler
 from .audio_assembler import AudioAssembler
+from .base_engine import BaseTTSEngine
+from .engine_registry import EngineRegistry
+from .capabilities import EngineCapabilities, SynthesisMode, FeatureFlag
 
 __all__ = [
     "QwenEngine",
@@ -35,4 +38,9 @@ __all__ = [
     "VoiceCloneConfig",
     "TimelineScheduler",
     "AudioAssembler",
+    "BaseTTSEngine",
+    "EngineRegistry",
+    "EngineCapabilities",
+    "SynthesisMode",
+    "FeatureFlag",
 ]

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class ModelInfo:
-    """模型信息"""
+    """模型信息（兼容性封装层）"""
 
     def __init__(
         self,
@@ -25,7 +25,7 @@ class ModelInfo:
         repo_id: str,
         description: str = "",
         required: bool = False,
-        dependencies: Optional[List[str]] = None
+        dependencies: Optional[List[str]] = None,
     ):
         self.model_id = model_id
         self.name = name
@@ -37,67 +37,7 @@ class ModelInfo:
 
 
 class ModelManager:
-    """模型管理器 - 基于 ModelScope"""
-
-    # Qwen3-TTS 模型列表
-    AVAILABLE_MODELS = {
-        # ========== 分词器（必需） ==========
-        "tokenizer-12hz": ModelInfo(
-            model_id="tokenizer-12hz",
-            name="Qwen3-TTS 分词器 (12Hz)",
-            size="~50MB",
-            repo_id="Qwen/Qwen3-TTS-Tokenizer-12Hz",
-            description="12Hz 采样率分词器，文本编码必需",
-            required=True
-        ),
-
-        # ========== 1.7B 系列模型 ==========
-        "1.7b-customvoice": ModelInfo(
-            model_id="1.7b-customvoice",
-            name="Qwen3-TTS 1.7B 自定义声音",
-            size="~3.4GB",
-            repo_id="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-            description="1.7B 参数模型，支持自定义声音克隆",
-            dependencies=["tokenizer-12hz"]
-        ),
-
-        "1.7b-voicedesign": ModelInfo(
-            model_id="1.7b-voicedesign",
-            name="Qwen3-TTS 1.7B 声音设计",
-            size="~3.4GB",
-            repo_id="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-            description="1.7B 参数模型，高级声音设计功能",
-            dependencies=["tokenizer-12hz"]
-        ),
-
-        "1.7b-base": ModelInfo(
-            model_id="1.7b-base",
-            name="Qwen3-TTS 1.7B 基础版",
-            size="~3.4GB",
-            repo_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-            description="1.7B 参数基础模型，推荐使用",
-            dependencies=["tokenizer-12hz"]
-        ),
-
-        # ========== 0.6B 系列模型 ==========
-        "0.6b-customvoice": ModelInfo(
-            model_id="0.6b-customvoice",
-            name="Qwen3-TTS 0.6B 自定义声音",
-            size="~1.2GB",
-            repo_id="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-            description="0.6B 参数模型，轻量级自定义声音",
-            dependencies=["tokenizer-12hz"]
-        ),
-
-        "0.6b-base": ModelInfo(
-            model_id="0.6b-base",
-            name="Qwen3-TTS 0.6B 基础版",
-            size="~1.2GB",
-            repo_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-            description="0.6B 参数基础模型，适合低配置设备",
-            dependencies=["tokenizer-12hz"]
-        ),
-    }
+    """模型管理器 - 基于 ModelScope，使用 EngineRegistry 获取模型数据"""
 
     def __init__(self, models_dir: str = "./models", config_manager=None):
         """
@@ -114,11 +54,45 @@ class ModelManager:
         self._download_status: Dict[str, str] = {}
         self._download_progress: Dict[str, float] = {}
 
+    def _get_available_models(self) -> Dict[str, ModelInfo]:
+        """从 EngineRegistry 获取可用的模型列表（懒加载）"""
+        from tts.engine_registry import EngineRegistry
+
+        try:
+            registry = EngineRegistry.instance()
+            models = {}
+            for md in registry.list_models():
+                # tokenizer-12hz 是必需的基础模型
+                is_required = md.model_id == "tokenizer-12hz"
+                models[md.model_id] = ModelInfo(
+                    model_id=md.model_id,
+                    name=md.name,
+                    size=md.size,
+                    repo_id=md.repo_id,
+                    description=md.description,
+                    required=is_required,
+                    dependencies=md.dependencies,
+                )
+            return models
+        except Exception as e:
+            logger.warning(f"无法从 EngineRegistry 获取模型列表: {e}")
+            return {}
+
+    def get_engine_for_model(self, model_id: str) -> str:
+        """获取模型对应的引擎 ID"""
+        from tts.engine_registry import EngineRegistry
+
+        registry = EngineRegistry.instance()
+        model_def = registry.get_model_info(model_id)
+        if model_def:
+            return model_def.engine_id
+        return ""
+
     def get_installed_models(self) -> list:
         """获取已安装的模型列表"""
         installed = []
 
-        for model_id in self.AVAILABLE_MODELS.keys():
+        for model_id in self._get_available_models().keys():
             model_path = self.models_dir / model_id
             if model_path.exists() and self._is_model_complete(model_path):
                 installed.append(model_id)
@@ -132,32 +106,35 @@ class ModelManager:
             return False
 
         # 检查是否有配置文件
-        config_files = list(model_path.glob("*.json")) + list(model_path.glob("config.json"))
+        config_files = list(model_path.glob("*.json")) + list(
+            model_path.glob("config.json")
+        )
         if not config_files:
             return False
 
         # 检查是否有模型权重文件
         model_files = (
-            list(model_path.glob("*.safetensors")) +
-            list(model_path.glob("*.bin")) +
-            list(model_path.glob("*.pth"))
+            list(model_path.glob("*.safetensors"))
+            + list(model_path.glob("*.bin"))
+            + list(model_path.glob("*.pth"))
         )
 
         return len(model_files) > 0
 
     def get_model_info(self, model_id: str) -> Optional[ModelInfo]:
         """获取模型信息"""
-        return self.AVAILABLE_MODELS.get(model_id)
+        return self._get_available_models().get(model_id)
 
     def list_available_models(self) -> Dict[str, ModelInfo]:
         """列出所有可用模型"""
-        return self.AVAILABLE_MODELS.copy()
+        return self._get_available_models().copy()
 
     def _check_modelscope(self) -> bool:
         """检查 ModelScope 是否已安装"""
         try:
             # 使用 Python import 检查，比 subprocess 更可靠
             import modelscope
+
             # 尝试访问版本号以验证包是否完整
             _ = modelscope.__version__
             return True
@@ -170,7 +147,7 @@ class ModelManager:
     async def download_model(
         self,
         model_id: str,
-        progress_callback: Optional[Callable[[str, float, str], None]] = None
+        progress_callback: Optional[Callable[[str, float, str], None]] = None,
     ) -> bool:
         """
         下载模型 - 使用 ModelScope Python API
@@ -217,18 +194,20 @@ class ModelManager:
                 download_kwargs = {
                     "cache_dir": str(self.models_dir),
                     "local_dir": str(model_path),
-                    "revision": "master"
+                    "revision": "master",
                 }
 
                 # 如果不是分词器模型，排除 speech_tokenizer 目录（使用共享分词器）
                 if model_id != "tokenizer-12hz":
                     # 使用 ignore_patterns 排除 speech_tokenizer 目录及其所有内容
                     download_kwargs["ignore_patterns"] = ["speech_tokenizer/**"]
-                    logger.info("跳过 speech_tokenizer 目录（将使用共享分词器 tokenizer-12hz）")
+                    logger.info(
+                        "跳过 speech_tokenizer 目录（将使用共享分词器 tokenizer-12hz）"
+                    )
 
                 return snapshot_download(
                     model_info.repo_id,
-                    **download_kwargs
+                    **download_kwargs,
                     # 注意：ModelScope 的 snapshot_download 不支持自定义进度回调
                     # 它会在内部自动显示进度到终端
                 )
@@ -252,13 +231,17 @@ class ModelManager:
             logger.error(f"模型下载失败: {str(e)}")
             self._download_status[model_id] = "failed"
             if progress_callback:
-                progress_callback(model_id, self._download_progress.get(model_id, 0), f"失败: {str(e)}")
+                progress_callback(
+                    model_id,
+                    self._download_progress.get(model_id, 0),
+                    f"失败: {str(e)}",
+                )
             return False
 
     async def download_model_with_dependencies(
         self,
         model_id: str,
-        progress_callback: Optional[Callable[[str, float, str], None]] = None
+        progress_callback: Optional[Callable[[str, float, str], None]] = None,
     ) -> bool:
         """
         下载模型及其依赖
@@ -356,11 +339,7 @@ class ModelManager:
         if not model_path.exists():
             return "未知"
 
-        total_size = sum(
-            f.stat().st_size
-            for f in model_path.rglob('*')
-            if f.is_file()
-        )
+        total_size = sum(f.stat().st_size for f in model_path.rglob("*") if f.is_file())
 
         size_mb = total_size / 1024 / 1024
         if size_mb < 1024:
@@ -415,7 +394,7 @@ class ModelManager:
     def list_usable_models(self) -> list:
         """列出所有可用的模型（排除分词器）"""
         usable = []
-        for model_id in self.AVAILABLE_MODELS.keys():
+        for model_id in self._get_available_models().keys():
             # 排除分词器模型
             if "tokenizer" in model_id.lower():
                 continue
@@ -435,7 +414,7 @@ class ModelManager:
             list: 可用的模型 ID 列表
         """
         usable = []
-        for model_id in self.AVAILABLE_MODELS.keys():
+        for model_id in self._get_available_models().keys():
             # 排除分词器模型
             if "tokenizer" in model_id.lower():
                 continue
